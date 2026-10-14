@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 import time
 from io import BytesIO
 
@@ -12,6 +13,7 @@ from dashboard.auth import LoginThrottle, hash_password, registered_users, verif
 from dashboard.registry import DEVELOPER_CREDIT, account_code
 from dashboard import breakdown as bd
 from dashboard import jhcis as jc
+from dashboard import local_jhcis as lj
 import hashlib
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,
@@ -367,12 +369,68 @@ def choose_category(label, key):
     st.session_state[key] = label
 
 
+def local_clinical(scope):
+    st.caption("โหมดเครื่องส่วนตัว • อ่านฐานโดยตรง ไม่ต้องสร้าง clinical view • ค่าเชื่อมต่ออยู่ในเซสชันนี้")
+    st.caption("ระบบตรวจตาราง person / visit / visitdiag / visitdrug และคอลัมน์ที่จำเป็นก่อนอ่าน หากโครงสร้างต่างกันจะแจ้งให้ปรับตัวอ่าน")
+    with st.form("local_jhcis_connection"):
+        st.text_input("รหัสหน่วยบริการ JHCIS", value=scope, disabled=True)
+        host = st.text_input("เครื่อง JHCIS / IP หรือปลายทาง tunnel", value="127.0.0.1", key="local_db_host")
+        port = st.number_input("พอร์ตฐาน / พอร์ต tunnel", min_value=1, max_value=65535, value=3306, step=1, key="local_db_port")
+        database = st.text_input("ชื่อฐานข้อมูล", value="jhcisdb" + scope, key="local_db_name")
+        db_user = st.text_input("ผู้ใช้ฐานข้อมูล", value="root", key="local_db_user")
+        password = st.text_input("รหัสผ่านฐานข้อมูล JHCIS", type="password", key="local_db_password")
+        transport = st.selectbox("ช่องทางเชื่อม", ["เครื่องนี้ / LAN ภายใน", "SSH tunnel ที่เปิดไว้ (localhost)", "Internet พร้อม TLS"], key="local_db_transport")
+        dates = st.date_input("วันที่รับบริการจาก JHCIS", value=(pd.Timestamp.today().date().replace(day=1), pd.Timestamp.today().date()), key="local_db_dates")
+        submitted = st.form_submit_button("เชื่อมและอ่าน JHCIS แบบ read-only", width="stretch")
+    st.caption("ใช้ SELECT เท่านั้น ไม่มีการแก้ฐาน • ฐานบน Internet ที่ไม่เปิด TLS ให้ใช้ SSH tunnel/VPN ภายในก่อน • แนะนำบัญชีฐานที่มีสิทธิอ่าน")
+    if submitted:
+        st.session_state.pop("clinical_records", None)
+        if not host.strip() or not database.strip() or not db_user.strip() or not password or len(dates) != 2:
+            st.error("กรอกค่าเชื่อมต่อและช่วงวันที่ให้ครบ")
+        else:
+            config = {"host": host.strip(), "port": int(port), "database": database.strip(), "user": db_user.strip(),
+                      "password": password, "transport": {"เครื่องนี้ / LAN ภายใน": "local", "SSH tunnel ที่เปิดไว้ (localhost)": "ssh", "Internet พร้อม TLS": "tls"}[transport]}
+            try:
+                with st.spinner("ตรวจโครงสร้างและอ่าน JHCIS…"):
+                    records = lj.read_standard(config, scope, *dates)
+                st.session_state.clinical_records = (scope, records, dates)
+            except lj.SchemaMismatch as error:
+                st.error(str(error)) # Only table/column metadata, never credentials.
+            except ValueError:
+                st.error("ตรวจ host/ช่องทางเชื่อมและช่วงวันที่ไม่เกิน 366 วัน: โหมดเครื่อง/LAN ไม่อนุญาต IP สาธารณะ; SSH ต้องเป็น localhost ของ tunnel")
+            except Exception:
+                st.error("เชื่อม JHCIS ไม่สำเร็จ ตรวจ host, พอร์ต, บัญชี, สิทธิ SELECT และช่องทางเข้ารหัส ไม่มีการเปลี่ยนไปเชื่อมแบบไม่เข้ารหัสให้อัตโนมัติ")
+            finally:
+                config["password"] = None
+    if st.button("ล้างข้อมูลและค่าเชื่อม JHCIS", key="local_db_clear"):
+        for key in list(st.session_state):
+            if key.startswith("local_db_") or key == "clinical_records":
+                del st.session_state[key]
+        st.rerun()
+    loaded = st.session_state.get("clinical_records")
+    if loaded and loaded[0] == scope:
+        st.success(f"อ่าน {len(loaded[1]):,} visit • {loaded[2][0]} ถึง {loaded[2][1]}")
+        female_text = st.text_input("รหัสเพศหญิงในฐานนี้", value="2,F,FEMALE,หญิง", key="local_db_female")
+        nation_codes = sorted({str(value) for value in loaded[1].nationality.dropna() if str(value).strip()})
+        thai_codes = st.multiselect("เลือกรหัสที่หมายถึงสัญชาติไทยในฐานนี้", nation_codes,
+                                    default=[value for value in nation_codes if value in ("ไทย", "TH", "THAI")], key="local_db_thai")
+        if not thai_codes:
+            st.info("ยังไม่ระบุรหัสสัญชาติไทย จะขึ้นว่าข้อมูลเงื่อนไขสัญชาติยังไม่ครบ")
+        return (loaded[1], scope, [value.strip() for value in female_text.split(",") if value.strip()], thai_codes)
+    return None
+
+
 def clinical_sidebar(scope, demo):
     with st.expander("เชื่อม JHCIS • อ่านอย่างเดียว"):
         st.caption("จับคู่เลขบัตร + วันรับบริการ + หน่วยบริการ • ชื่อใช้เสนอให้ตรวจสอบเท่านั้น")
         if demo:
             st.info("โหมดตัวอย่างไม่เชื่อมฐานผู้ป่วยจริง")
             return None
+        if os.environ.get("KHAMTECH_LOCAL") == "1":
+            if st.get_option("server.address") not in ("127.0.0.1", "localhost", "::1"):
+                st.error("โหมดเครื่องส่วนตัวต้อง bind server.address = 127.0.0.1 ตามตัวเปิดโปรแกรม")
+                return None
+            return local_clinical(scope)
         try:
             config = dict(st.secrets.get("jhcis", {}).get(scope, {}))
         except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):

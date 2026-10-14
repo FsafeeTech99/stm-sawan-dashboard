@@ -88,7 +88,7 @@ def assess_visit(rows, female_values, thai_values):
               'อายุ 13–45 ปี': 13 <= age <= 45 if age is not None else None,
               'ICD-10 Z13.0': 'Z130' in diagnoses if diagnoses else None,
               'drugcode 14001': '14001' in drugs if drugs else None,
-              'สัญชาติไทย': nationality in {str(v).upper() for v in thai_values} if nationality else None}
+              'สัญชาติไทย': nationality in {str(v).upper() for v in thai_values} if nationality and thai_values else None}
     if all(value is True for value in checks.values()):
         status = 'ตรงเงื่อนไขหญิงไทยแก้มแดงที่ผู้ใช้กำหนด'
     elif any(value is False for value in checks.values()):
