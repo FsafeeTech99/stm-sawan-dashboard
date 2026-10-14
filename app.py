@@ -21,7 +21,7 @@ from dashboard.data import (
     first_column, money, normalize_code, prepare_records, read_workbook, reconcile, restrict_to_facility, signed_totals, summarize,
 )
 
-st.set_page_config(page_title="KhamTechCheckSawng • งบพึงรับ & STM", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="KhamTechReCheck • งบพึงรับ & STM", page_icon="🏥", layout="wide")
 st.markdown("""
 <style>
  .stApp {background:#f5f8fa;color:#163946;}
@@ -29,7 +29,7 @@ st.markdown("""
  .block-container {padding-top:2rem;padding-bottom:3rem;max-width:1550px;}
  .hero {background:linear-gradient(115deg,#123f4c,#176e74);padding:28px 32px;
    border-radius:20px;margin-bottom:24px;color:white;}
- .hero h1 {font-size:1.9rem;color:white;margin:6px 0 10px;line-height:1.5;}
+ .hero h1 {font-size:clamp(2rem,4.2vw,3.1rem);font-weight:800;color:white;margin:6px 0 18px;line-height:1.2;letter-spacing:-.025em;}
  .hero p {color:#d2e8ea;margin:0;font-size:.94rem;}
  .eyebrow {font-size:.75rem;letter-spacing:.14em;color:#8ce4cd;font-weight:700;}
  [data-testid="stMetric"] {background:white;border:1px solid #dce7eb;border-radius:16px;padding:18px 20px;}
@@ -44,7 +44,7 @@ st.markdown("""
 
 def hero():
     st.markdown("""<div class="hero"><div class="eyebrow">เครือข่ายบริการสุขภาพ อ.สว่างแดนดิน</div>
-    <h1>KhamTechCheckSawng</h1>
+    <h1>KhamTechReCheck</h1>
     <p>ตรวจสอบงบพึงรับ & Statement สปสช. • วิเคราะห์บริการและยอด Walk-in</p>
     <p>เครือข่ายบริการสุขภาพ อ.สว่างแดนดิน · รพร.สว่างแดนดิน 11450 · รพ.สต. สังกัด อบจ.สกลนคร</p></div>""", unsafe_allow_html=True)
 
@@ -512,7 +512,7 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
         st.write(f"**Walk-in {len(table):,} รายการ** • แยก PP, FS, Drug และ HC ต่อรายการ")
         st.dataframe(table, hide_index=True, width="stretch")
         download("Export รายการ Walk-in และยอดทั้ง 4 หมวด", {"Walk-in รายรายการ": table},
-                 "KhamTechCheckSawng_walkin.xlsx", prefix + "_walkin_export")
+                 "KhamTechReCheck_walkin.xlsx", prefix + "_walkin_export")
     label = st.radio("คลิกเลือกหมวดบริการ", list(bd.CATEGORIES), key=category_key, horizontal=True)
     st.caption(f"{label} • {bd.CATEGORY_NAMES[label]}")
     summary = bd.amount_summary(frame, label, rules)
@@ -571,7 +571,7 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
     if clinical is not None:
         export_tables["สรุปหลักฐาน JHCIS"] = evidence_summary
     download("Export สรุปราคาและรายการที่เลือก", export_tables,
-             f"KhamTechCheckSawng_{label.replace(' ', '_')}_details.xlsx", prefix + "_details_export")
+             f"KhamTechReCheck_{label.replace(' ', '_')}_details.xlsx", prefix + "_details_export")
 
 
 def main():
@@ -581,7 +581,7 @@ def main():
         clear_session()
         st.rerun()
     with st.sidebar:
-        st.markdown("### 🏥 KhamTechCheckSawng")
+        st.markdown("### 🏥 KhamTechReCheck")
         st.caption("ศูนย์ตรวจสอบงบเครือข่าย")
         st.caption(html.escape(user))
         if scope:
@@ -689,7 +689,7 @@ def main():
         service_tab(datasets, rules, "service", evidence=evidence)
     with tabs[4]:
         service_tab(datasets, rules, "walkin", only_walkin=True, evidence=evidence)
-    st.caption("KhamTechCheckSawng · สรุปจากไฟล์ที่อัปโหลดและตัวกรองปัจจุบัน · ยอดเงินหน่วยบาท · ใช้เพื่อประกอบการตรวจสอบ")
+    st.caption("KhamTechReCheck · สรุปจากไฟล์ที่อัปโหลดและตัวกรองปัจจุบัน · ยอดเงินหน่วยบาท · ใช้เพื่อประกอบการตรวจสอบ")
     st.caption(DEVELOPER_CREDIT)
 
 

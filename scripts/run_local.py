@@ -52,7 +52,7 @@ def main():
     env['KHAMTECH_LOCAL'] = '1'
     env['PYTHONIOENCODING'] = 'utf-8'
     url = f'http://127.0.0.1:{port}'
-    print(f'KhamTechCheckSawng: {url}', flush=True)
+    print(f'KhamTechReCheck: {url}', flush=True)
     print('Local mode. Close this console / press Ctrl+C to stop.', flush=True)
     command = [str(runtime), '-m', 'streamlit', 'run', str(root / 'app.py'),
                '--server.address=127.0.0.1', f'--server.port={port}', '--server.headless=true',
