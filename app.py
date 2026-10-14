@@ -10,13 +10,15 @@ import streamlit as st
 
 from dashboard.auth import LoginThrottle, hash_password, registered_users, verify_password
 from dashboard.registry import DEVELOPER_CREDIT, account_code
+from dashboard import breakdown as bd
+import hashlib
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,
     STM_AMOUNTS, STM_COLUMNS, category_summary, combine_records, content_hash, details, excel_bytes, filter_records,
-    first_column, normalize_code, prepare_records, read_workbook, reconcile, restrict_to_facility, signed_totals, summarize,
+    first_column, money, normalize_code, prepare_records, read_workbook, reconcile, restrict_to_facility, signed_totals, summarize,
 )
 
-st.set_page_config(page_title="SAWAN • งบพึงรับ & STM", page_icon="🏥", layout="wide")
+st.set_page_config(page_title="KhamTechCheckSawng • งบพึงรับ & STM", page_icon="🏥", layout="wide")
 st.markdown("""
 <style>
  .stApp {background:#f5f8fa;color:#163946;}
@@ -38,8 +40,9 @@ st.markdown("""
 
 
 def hero():
-    st.markdown("""<div class="hero"><div class="eyebrow">SAWAN HEALTH NETWORK / FINANCE WORKSPACE</div>
-    <h1>ตรวจสอบงบพึงรับ & Statement สปสช.</h1>
+    st.markdown("""<div class="hero"><div class="eyebrow">เครือข่ายบริการสุขภาพ อ.สว่างแดนดิน</div>
+    <h1>KhamTechCheckSawng</h1>
+    <p>ตรวจสอบงบพึงรับ & Statement สปสช. • วิเคราะห์บริการและยอด Walk-in</p>
     <p>เครือข่ายบริการสุขภาพ อ.สว่างแดนดิน · รพร.สว่างแดนดิน 11450 · รพ.สต. สังกัด อบจ.สกลนคร</p></div>""", unsafe_allow_html=True)
 
 
@@ -120,17 +123,19 @@ def authenticate() -> tuple[str, bool]:
 
 
 def demo_workbooks():
-    budget = pd.DataFrame({"HSUB": [5542, 5542, 11450],
-                           "HCODE": [5542, 5542, 11450], "HCODE_PAID": [11450] * 3,
+    budget = pd.DataFrame({"HSUB": [5542, 5542, 5555],
+                           "HCODE": [5542, 5542, 5555], "HCODE_PAID": [11450] * 3,
                            "REP": ["DEMO-001"] * 3, "TRAN_ID": ["BUD-001", "BUD-002", "BUD-003"],
-                           "ชื่อหน่วยบริการ": ["รพ.สต.คำสะอาด", "รพ.สต.คำสะอาด", "รพร.สว่างแดนดิน"],
-                           "งวด": ["2569-09"] * 3, "ยอดชดเชยทั้งสิ้น": [82000.50, 18000, 225000],
-                           "PP": [82000.50, 18000, 225000]})
+                           "ชื่อหน่วยบริการ": ["รพ.สต.คำสะอาด", "รพ.สต.คำสะอาด", "รพ.สต.บ้านตาลโกน"],
+                           "งวด": ["2569-09"] * 3, "ยอดชดเชยทั้งสิ้น": [200, 60, 400],
+                           "PP": [80, 60, 360], "HC": [120, 0, 0], "DRUG": [0, 0, 40],
+                           "PROJCODE": ["WALKIN", "PPFS", "WALK-IN"]})
     stm = pd.DataFrame({"REP": ["DEMO-001"] * 3, "TRAN_ID": ["SIM-001", "SIM-002", "SIM-003"],
                         "HN": ["00001", "00002", "00003"], "HCODE": [11450] * 3,
-                        "HSUB": [5542, 5542, 11450], "งวด": ["2569-09"] * 3,
+                        "HSUB": [5542, 5542, 5555], "งวด": ["2569-09"] * 3,
                         "ชื่อ-นามสกุล": ["ผู้รับบริการสมมติ ก", "ผู้รับบริการสมมติ ข", "ผู้รับบริการสมมติ ค"],
-                        "ยอดชดเชยทั้งสิ้น": [68000.50, 17000, 225000], "PP": [68000.50, 17000, 225000]})
+                        "ยอดชดเชยทั้งสิ้น": [180, 60, 380], "PP": [80, 60, 320],
+                        "HC": [100, 0, 0], "DRUG": [0, 0, 60], "PROJCODE": ["WALKIN", "PPFS", "WALK-IN"]})
     result = []
     for group, frame in (("budget", budget), ("stm", stm)):
         for col in CATEGORY_COLUMNS:
@@ -357,6 +362,90 @@ def comparison_tab(budget, stm):
              "sawan_comparison_filtered.xlsx", "comparison_export")
 
 
+def choose_category(label, key):
+    st.session_state[key] = label
+
+
+def service_tab(datasets, rules, prefix, only_walkin=False):
+    labels = {"พึงรับ รพ.สต.": "budget", "Statement สปสช.": "stm"}
+    selected = st.selectbox("ชุดข้อมูลที่วิเคราะห์", list(labels),
+                            index=1 if datasets["budget"].empty and not datasets["stm"].empty else 0,
+                            key=prefix + "_source")
+    frame = datasets[labels[selected]]
+    if frame.empty:
+        st.info("ยังไม่มีรายการตรงตัวกรองในชุดนี้ กรุณาอัปโหลดไฟล์หรือเลือกอีกชุดข้อมูล")
+        return
+    if only_walkin:
+        st.subheader("Walk-in • ยอดและบริการของแต่ละรายการ")
+        st.caption("คัดเฉพาะ PROJCODE ที่ระบุ WALKIN, WALK-IN หรือ WALK IN ตามที่ผู้ใช้กำหนด")
+        if "PROJCODE" not in frame:
+            st.warning("ไฟล์นี้ไม่มี PROJCODE จึงยังระบุ Walk-in ไม่ได้")
+            return
+        frame = bd.walkin_rows(frame)
+        if frame.empty:
+            st.info("ไม่พบ PROJCODE ที่ระบุ Walk-in ในผลกรองนี้ ระบบไม่ถือ OP ทั้งหมดเป็น Walk-in")
+            return
+    else:
+        st.subheader("เจาะยอด • แต่ละราคาคือบริการอะไร")
+    st.info("ชื่อบริการเป็นการประมาณการจากหมวดและยอดเงิน โดยอ้างอิงภาพราคาปี 2570 ที่ผู้ใช้ให้ ไม่ได้ยืนยันจากรหัสบริการ อายุ หรือสิทธิการรักษา ยอดเงินต้นทางยังคงเดิม")
+    overview = st.columns(5)
+    overview[0].metric("ยอดรวมจากไฟล์ • " + ("Walk-in" if only_walkin else "ผลกรองนี้"), f"{amount_total(frame):,.2f}", "บาท", delta_color="off")
+    category_key = prefix + "_category"
+    for column, label in zip(overview[1:], bd.FOCUS):
+        total = bd.category_total(frame, label)
+        column.metric(label, "ข้อมูลไม่ครบ" if total is None else f"{total:,.2f}", "บาท", delta_color="off")
+        column.button(f"ดูรายการ {label}", key=prefix + "_open_" + label,
+                      on_click=choose_category, args=(label, category_key), width="stretch")
+    st.caption("PP / FS / Drug / HC เป็นยอดแต่ละคอลัมน์ ไม่เอามาบวกแทนยอดชดเชยทั้งสิ้น เพราะรายงานอาจมียอดย่อยซ้อนกัน จำนวนรายการเป็นแถวใน STM ไม่ใช่จำนวนครั้งบริการที่ยืนยันแล้ว")
+    show_names = st.checkbox("แสดงชื่อผู้รับบริการในตารางเจาะรายการ", key=prefix + "_names", value=False)
+    if only_walkin:
+        table = bd.walkin_table(frame, rules, show_names)
+        st.write(f"**Walk-in {len(table):,} รายการ** • แยก PP, FS, Drug และ HC ต่อรายการ")
+        st.dataframe(table, hide_index=True, width="stretch")
+        download("Export รายการ Walk-in และยอดทั้ง 4 หมวด", {"Walk-in รายรายการ": table},
+                 "KhamTechCheckSawng_walkin.xlsx", prefix + "_walkin_export")
+    label = st.radio("คลิกเลือกหมวดบริการ", list(bd.CATEGORIES), key=category_key, horizontal=True)
+    st.caption(f"{label} • {bd.CATEGORY_NAMES[label]}")
+    summary = bd.amount_summary(frame, label, rules)
+    if summary.empty:
+        st.info(f"ไม่มีจำนวนเงินที่ไม่เป็นศูนย์ในคอลัมน์ {bd.CATEGORIES[label]} หรือข้อมูลอ่านไม่ได้")
+        return
+    digest = hashlib.sha256(summary.to_json(orient="split", force_ascii=False).encode()).hexdigest()[:12]
+    st.caption("คลิกแถวราคาเพื่อเปิดรายการเบื้องหลัง เช่น PP 80 → หญิงไทยแก้มแดง • PP 60 → FIT test • PP 360 → ANC")
+    event = st.dataframe(summary, hide_index=True, width="stretch", on_select="rerun",
+                         selection_mode="single-row", key=f"{prefix}_amount_{label}_{digest}")
+    picked = event.selection.rows
+    picked_cents = None
+    if picked and 0 <= picked[0] < len(summary):
+        picked_cents = money(summary.iloc[picked[0]]["ยอดต่อรายการ (บาท)"])
+    options = ["ทุกยอด"] + summary["ยอดต่อรายการ (บาท)"].map(lambda n: f"{n:,.2f} บาท").tolist()
+    # A dropdown supports keyboards/mobile and works even without row selection.
+    amount_choice = st.selectbox("เลือกยอดต่อรายการเพื่อเจาะรายละเอียด", options, key=f"{prefix}_price_{label}_{digest}")
+    if amount_choice != "ทุกยอด":
+        picked_cents = money(amount_choice.replace(" บาท", ""))
+    detail_rows = bd.rows_for_amount(frame, label, picked_cents)
+    detail = bd.service_details(detail_rows, label, rules, show_names)
+    positives = sum(int(n) for n in detail_rows["_category_cents"] if n > 0) / 100
+    negatives = sum(int(n) for n in detail_rows["_category_cents"] if n < 0) / 100
+    metrics = st.columns(4)
+    metrics[0].metric(f"รายการ {label} ที่เลือก", f"{len(detail):,}")
+    metrics[1].metric("ยอดบวกของหมวดที่เลือก", f"{positives:,.2f}")
+    metrics[2].metric("ยอดติดลบของหมวดที่เลือก", f"{negatives:,.2f}")
+    metrics[3].metric("ยอดสุทธิของหมวดที่เลือก", f"{positives + negatives:,.2f}")
+    st.dataframe(detail, hide_index=True, width="stretch")
+    if picked_cents is not None:
+        matches = bd.rate_matches(picked_cents, label)
+        if not matches.empty:
+            with st.expander("เหตุผลที่จับคู่ราคา • บริการและรหัสอ้างอิงที่เป็นไปได้", expanded=True):
+                st.dataframe(matches, hide_index=True, width="stretch")
+        else:
+            st.caption("ไม่พบราคาตรงในภาพอ้างอิง หมวด HC ใช้ชื่อยาสมุนไพรตามผู้ใช้ หรือเพิ่มกฎประมาณการใน sidebar ได้")
+    download("Export สรุปราคาและรายการที่เลือก", {"สรุปราคาหมวดที่เลือก": summary, "รายละเอียดที่เลือก": detail,
+             "กฎชื่อประมาณการ": pd.DataFrame([[g, c / 100, name] for (g, c), name in rules.items()],
+                                      columns=bd.DEFAULT_RULES.columns), "อัตราอ้างอิงจากภาพ": bd.RATE_DF},
+             f"KhamTechCheckSawng_{label.replace(' ', '_')}_details.xlsx", prefix + "_details_export")
+
+
 def main():
     user, demo = authenticate()
     scope = None if demo else account_code(st.session_state.user)
@@ -364,7 +453,7 @@ def main():
         clear_session()
         st.rerun()
     with st.sidebar:
-        st.markdown("### 🏥 SAWAN")
+        st.markdown("### 🏥 KhamTechCheckSawng")
         st.caption("ศูนย์ตรวจสอบงบเครือข่าย")
         st.caption(html.escape(user))
         if scope:
@@ -390,6 +479,17 @@ def main():
         with st.expander("ทะเบียนชื่อหน่วยบริการ"):
             st.caption("รายชื่อคงที่ตามรายการหน่วยบริการที่กำหนด")
             st.dataframe(pd.DataFrame(DEFAULT_DIRECTORY.items(), columns=["รหัส", "ชื่อ"]), hide_index=True, width="stretch")
+        with st.expander("ตั้งชื่อบริการตามราคา • ประมาณการ"):
+            st.caption("กฎนี้ใช้เฉพาะเซสชันของคุณ จับคู่หมวด + ราคาต่อแถวแบบตรงกัน ไม่หารยอดรวมเพื่อเดาจำนวนบริการ")
+            rule_frame = st.data_editor(bd.DEFAULT_RULES, num_rows="dynamic", hide_index=True,
+                                       key="service_rules", disabled=demo,
+                                       column_config={"หมวด": st.column_config.SelectboxColumn(options=list(bd.CATEGORIES)),
+                                                      "ยอดต่อรายการ (บาท)": st.column_config.NumberColumn(min_value=0.01, format="%.2f")})
+        with st.expander("อัตราอ้างอิงปี 2570 • จากภาพผู้ใช้"):
+            st.dataframe(bd.RATE_DF, hide_index=True, width="stretch")
+    rules, rule_errors = bd.rule_map(rule_frame)
+    for error in rule_errors:
+        st.warning(error)
     directory = DEFAULT_DIRECTORY
     hero()
     if scope:
@@ -449,14 +549,18 @@ def main():
             ["01 / นำเข้า Excel", "02 / ตรวจรหัสและงวด", "03 / สรุปและส่งออก"],
             ["เลือกงบพึงรับและ STM หลายไฟล์พร้อมกัน ระบบตรวจหัวตารางให้", "ใช้ HSUB ของ รพ.สต. และตั้งงวดตรงกันทั้งสองชุด", "ดูยอดรายหน่วยบริการ ผลต่างรอตรวจสอบ และดาวน์โหลด Excel"]):
             col.markdown(f'<div class="step"><strong>{title}</strong><p>{description}</p></div>', unsafe_allow_html=True)
-    tabs = st.tabs(["01  รวมไฟล์พึงรับ รพ.สต.", "02  Statement สปสช. (STM)", "03  เปรียบเทียบและติดตามผลต่าง"])
+    tabs = st.tabs(["01 พึงรับ รพ.สต.", "02 STM", "03 เปรียบเทียบ", "04 รายละเอียดบริการ", "05 Walk-in"])
     with tabs[0]:
         dataset_tab(datasets["budget"], "budget", [a for a in audits if a["ประเภท"] == "งบพึงรับ"], len(budget_files))
     with tabs[1]:
         dataset_tab(datasets["stm"], "stm", [a for a in audits if a["ประเภท"] == "STM"], len(stm_files))
     with tabs[2]:
         comparison_tab(datasets["budget"], datasets["stm"])
-    st.caption("SAWAN · สรุปจากไฟล์ที่อัปโหลดและตัวกรองปัจจุบัน · ยอดเงินหน่วยบาท · ใช้เพื่อประกอบการตรวจสอบ")
+    with tabs[3]:
+        service_tab(datasets, rules, "service")
+    with tabs[4]:
+        service_tab(datasets, rules, "walkin", only_walkin=True)
+    st.caption("KhamTechCheckSawng · สรุปจากไฟล์ที่อัปโหลดและตัวกรองปัจจุบัน · ยอดเงินหน่วยบาท · ใช้เพื่อประกอบการตรวจสอบ")
     st.caption(DEVELOPER_CREDIT)
 
 
