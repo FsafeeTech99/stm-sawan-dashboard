@@ -25,6 +25,8 @@ def identifier(value):
 
 
 def service_date(value):
+    if value is None or pd.isna(value):
+        return None
     if isinstance(value, (datetime, date, pd.Timestamp)):
         return value.date() if isinstance(value, (datetime, pd.Timestamp)) else value
     text = clean_text(value)

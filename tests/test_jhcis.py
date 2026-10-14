@@ -76,6 +76,7 @@ class JhcIsTests(TestCase):
         self.assertEqual(jc.identifier('12345'), '')
         self.assertEqual(jc.service_date('25691014'), date(2026, 10, 14))
         self.assertIsNone(jc.service_date('31/02/2569'))
+        self.assertIsNone(jc.service_date(pd.NaT))
 
     def test_reader_static_select_limits_parameters_and_closes(self):
         config = dict(host='fake', user='test', password='private', database='fake', view='clinical_view', max_rows=1)
