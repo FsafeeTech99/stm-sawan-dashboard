@@ -11,6 +11,7 @@ import streamlit as st
 from dashboard.auth import LoginThrottle, hash_password, registered_users, verify_password
 from dashboard.registry import DEVELOPER_CREDIT, account_code
 from dashboard import breakdown as bd
+from dashboard import jhcis as jc
 import hashlib
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,
@@ -366,7 +367,54 @@ def choose_category(label, key):
     st.session_state[key] = label
 
 
-def service_tab(datasets, rules, prefix, only_walkin=False):
+def clinical_sidebar(scope, demo):
+    with st.expander("เชื่อม JHCIS • อ่านอย่างเดียว"):
+        st.caption("จับคู่เลขบัตร + วันรับบริการ + หน่วยบริการ • ชื่อใช้เสนอให้ตรวจสอบเท่านั้น")
+        if demo:
+            st.info("โหมดตัวอย่างไม่เชื่อมฐานผู้ป่วยจริง")
+            return None
+        try:
+            config = dict(st.secrets.get("jhcis", {}).get(scope, {}))
+        except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+            config = {}
+        if not config.get("enabled", False):
+            st.info("ยังไม่ได้ตั้งค่าฐาน JHCIS ของหน่วยนี้ ผู้ดูแลต้องตั้ง server Secrets และ clinical view ตามคู่มือ JHCIS_SETUP.md")
+            return None
+        # Default public facility passwords must not unlock server-held clinical data.
+        if verify_password(scope, users_config()[st.session_state.user]["password_hash"]):
+            st.warning("ก่อนเชื่อมฐานผู้ป่วย ผู้ดูแลต้องเปลี่ยนรหัสผ่านบัญชีนี้จากรหัสหน่วยบริการใน Secrets")
+            return None
+        dates = st.date_input("ช่วงวันที่อ่านจาก JHCIS", value=(pd.Timestamp.today().date().replace(day=1), pd.Timestamp.today().date()), key="jhcis_dates")
+        if st.button("อ่านข้อมูล JHCIS ตามช่วงวันที่", key="jhcis_read", width="stretch"):
+            st.session_state.pop("clinical_records", None)
+            if len(dates) != 2:
+                st.error("เลือกวันเริ่มต้นและวันสิ้นสุด")
+            else:
+                try:
+                    with st.spinner("กำลังอ่าน clinical view…"):
+                        records = jc.read_view(config, scope, *dates)
+                    st.session_state.clinical_records = (scope, records, dates)
+                except Exception:
+                    # Never print connector exceptions: they can contain host/user/SQL.
+                    st.error("อ่าน JHCIS ไม่สำเร็จ ตรวจการเชื่อมต่อ สิทธิ SELECT, TLS, clinical view และช่วงวันที่ตามคู่มือ")
+        if st.button("ล้างข้อมูล JHCIS ในเซสชัน", key="jhcis_clear"):
+            st.session_state.pop("clinical_records", None)
+        loaded = st.session_state.get("clinical_records")
+        if loaded and loaded[0] == scope:
+            st.success(f"อ่าน {len(loaded[1]):,} แถวหลักฐาน • {loaded[2][0]} ถึง {loaded[2][1]}")
+            st.caption("เก็บในเซสชันปัจจุบัน อ่านใหม่เมื่อข้อมูล JHCIS เปลี่ยน ไม่แสดงเลขบัตรในตารางผล")
+            return (loaded[1], scope, config.get("female_values", ["2", "F", "FEMALE", "หญิง"]), config.get("thai_values", ["ไทย", "TH", "THAI"]))
+    return None
+
+
+def clinical_details(frame, evidence):
+    if evidence is None:
+        return None
+    records, scope, females, thai = evidence
+    return jc.match_claims(frame, records, scope, females, thai).reset_index(drop=True)
+
+
+def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
     labels = {"พึงรับ รพ.สต.": "budget", "Statement สปสช.": "stm"}
     selected = st.selectbox("ชุดข้อมูลที่วิเคราะห์", list(labels),
                             index=1 if datasets["budget"].empty and not datasets["stm"].empty else 0,
@@ -400,6 +448,9 @@ def service_tab(datasets, rules, prefix, only_walkin=False):
     show_names = st.checkbox("แสดงชื่อผู้รับบริการในตารางเจาะรายการ", key=prefix + "_names", value=False)
     if only_walkin:
         table = bd.walkin_table(frame, rules, show_names)
+        clinical = clinical_details(bd.valid_rows(frame), evidence)
+        if clinical is not None:
+            table = pd.concat([table, clinical], axis=1)
         st.write(f"**Walk-in {len(table):,} รายการ** • แยก PP, FS, Drug และ HC ต่อรายการ")
         st.dataframe(table, hide_index=True, width="stretch")
         download("Export รายการ Walk-in และยอดทั้ง 4 หมวด", {"Walk-in รายรายการ": table},
@@ -425,6 +476,22 @@ def service_tab(datasets, rules, prefix, only_walkin=False):
         picked_cents = money(amount_choice.replace(" บาท", ""))
     detail_rows = bd.rows_for_amount(frame, label, picked_cents)
     detail = bd.service_details(detail_rows, label, rules, show_names)
+    clinical = clinical_details(detail_rows, evidence)
+    if clinical is not None:
+        detail = pd.concat([detail, clinical], axis=1)
+        st.caption("หลักฐาน JHCIS ตรวจกฎหญิงไทยแก้มแดงที่ผู้ใช้กำหนด: หญิง อายุ 13–45 ปี ณ วันรับบริการ, Z13.0, drugcode 14001 และสัญชาติไทยใน visit เดียวกัน • ชื่ออย่างเดียวไม่ยืนยันตัวตน • ผลนี้ไม่ใช่การยืนยันสิทธิชดเชยของ สปสช.")
+        with st.expander("สรุปหลักฐาน JHCIS ของรายการที่เลือก", expanded=True):
+            signed = clinical.assign(_amount=detail_rows["_category_cents"].reset_index(drop=True).map(int))
+            signed["_positive"] = signed["_amount"].clip(lower=0)
+            signed["_negative"] = signed["_amount"].clip(upper=0)
+            evidence_summary = signed.groupby(["การจับคู่ JHCIS", "ผลตรวจเงื่อนไข JHCIS"], dropna=False).agg(
+                **{"จำนวนรายการ": ("_amount", "size"), "ยอดบวกหมวดที่เลือก (บาท)": ("_positive", "sum"),
+                   "ยอดติดลบหมวดที่เลือก (บาท)": ("_negative", "sum"), "ยอดสุทธิหมวดที่เลือก (บาท)": ("_amount", "sum")}).reset_index()
+            for column in evidence_summary.columns[3:]:
+                evidence_summary[column] = evidence_summary[column] / 100
+            st.dataframe(evidence_summary, hide_index=True, width="stretch")
+    else:
+        st.caption("ยังไม่มีหลักฐาน JHCIS ในเซสชันนี้ ชื่อบริการข้างต้นยังเป็นการประมาณการจากราคา")
     positives = sum(int(n) for n in detail_rows["_category_cents"] if n > 0) / 100
     negatives = sum(int(n) for n in detail_rows["_category_cents"] if n < 0) / 100
     metrics = st.columns(4)
@@ -440,9 +507,12 @@ def service_tab(datasets, rules, prefix, only_walkin=False):
                 st.dataframe(matches, hide_index=True, width="stretch")
         else:
             st.caption("ไม่พบราคาตรงในภาพอ้างอิง หมวด HC ใช้ชื่อยาสมุนไพรตามผู้ใช้ หรือเพิ่มกฎประมาณการใน sidebar ได้")
-    download("Export สรุปราคาและรายการที่เลือก", {"สรุปราคาหมวดที่เลือก": summary, "รายละเอียดที่เลือก": detail,
+    export_tables = {"สรุปราคาหมวดที่เลือก": summary, "รายละเอียดที่เลือก": detail,
              "กฎชื่อประมาณการ": pd.DataFrame([[g, c / 100, name] for (g, c), name in rules.items()],
-                                      columns=bd.DEFAULT_RULES.columns), "อัตราอ้างอิงจากภาพ": bd.RATE_DF},
+                                      columns=bd.DEFAULT_RULES.columns), "อัตราอ้างอิงจากภาพ": bd.RATE_DF}
+    if clinical is not None:
+        export_tables["สรุปหลักฐาน JHCIS"] = evidence_summary
+    download("Export สรุปราคาและรายการที่เลือก", export_tables,
              f"KhamTechCheckSawng_{label.replace(' ', '_')}_details.xlsx", prefix + "_details_export")
 
 
@@ -474,6 +544,7 @@ def main():
         stm_uploads = st.file_uploader("2. Statement สปสช. (STM)", type=["xls", "xlsx"], accept_multiple_files=True,
                                       key="stm_files", disabled=demo, help="รองรับ STM ทั้ง 25 ไฟล์ และทุกชีตที่มีตาราง")
         st.caption("แต่ละคนอัปโหลดและกรองของตนเอง ข้อมูลแยกตามเซสชัน ไม่บันทึกไฟล์ผู้ป่วยลงดิสก์")
+        evidence = clinical_sidebar(scope, demo)
         remove_duplicates = st.checkbox("ตัดรายการเหมือนกันระหว่างไฟล์/ชีต", value=True,
                                         help="รักษารายการซ้ำภายในชีตเดิมและรายการแก้ไขที่มียอดต่างกัน")
         with st.expander("ทะเบียนชื่อหน่วยบริการ"):
@@ -533,7 +604,7 @@ def main():
         lookup = all_records.loc[all_records["_facility"].ne("")].drop_duplicates("_facility").set_index("_facility")["_facility_name"].to_dict()
         with st.sidebar:
             st.divider()
-            st.subheader("ตัวกรองร่วมทั้ง 3 แท็บ")
+            st.subheader("ตัวกรองร่วมทั้ง 5 แท็บ")
             query = st.text_input("ค้นหารหัสหรือชื่อหน่วยบริการ", placeholder="05542 / 5542 / คำสะอาด", key="search")
             facilities = st.multiselect("หน่วยบริการ", sorted(lookup), default=[scope] if scope in lookup else [],
                                         disabled=bool(scope), format_func=lambda c: f"{c} · {lookup[c]}", key="facility_filter")
@@ -557,9 +628,9 @@ def main():
     with tabs[2]:
         comparison_tab(datasets["budget"], datasets["stm"])
     with tabs[3]:
-        service_tab(datasets, rules, "service")
+        service_tab(datasets, rules, "service", evidence=evidence)
     with tabs[4]:
-        service_tab(datasets, rules, "walkin", only_walkin=True)
+        service_tab(datasets, rules, "walkin", only_walkin=True, evidence=evidence)
     st.caption("KhamTechCheckSawng · สรุปจากไฟล์ที่อัปโหลดและตัวกรองปัจจุบัน · ยอดเงินหน่วยบาท · ใช้เพื่อประกอบการตรวจสอบ")
     st.caption(DEVELOPER_CREDIT)
 
