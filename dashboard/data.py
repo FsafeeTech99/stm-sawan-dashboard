@@ -11,7 +11,7 @@ import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 from dashboard.registry import FACILITIES
 
-FOCUS_SCHEMA_VERSION = 1
+FOCUS_SCHEMA_VERSION = 2
 
 
 STM_COLUMNS = [
@@ -34,7 +34,7 @@ IDENTIFIERS = ["REP", "TRAN_ID", "HN", "AN", "PID", "MAININSCL", "PROJCODE"]
 NAME_COLUMNS = ["ชื่อหน่วยบริการ", "ชื่อ รพ.สต.", "ชื่อหน่วยงาน"]
 BUDGET_AMOUNTS = ["งบพึงรับ", "ยอดพึงรับ", "จำนวนเงิน", "ยอดชดเชยทั้งสิ้น"]
 STM_AMOUNTS = ["ยอดชดเชยทั้งสิ้น", "จำนวนเงิน"]
-PERIOD_COLUMNS = ["งวด", "เดือน", "REP"]
+PERIOD_COLUMNS = ["REP", "งวด", "เดือน"]
 DEFAULT_DIRECTORY = FACILITIES
 CATEGORY_COLUMNS = [
     "จ่ายชดเชยหลังหัก พรบ.และเงินเดือน", "OP", "ยอดชดเชยที่คำนวณได้", "ยอดชดเชยที่จ่ายจริง",
@@ -163,10 +163,16 @@ class ParsedSheet:
     header_depth: int
     dropped_rows: int = 0
     warnings: list[str] = field(default_factory=list)
+    file_digest: str = ""
 
 
 def parse_sheet(raw: pd.DataFrame, filename: str, sheet: str, override=None) -> ParsedSheet:
     index, depth, headers = detect_header(raw, override)
+    if override is None:
+        for earlier in range(index):
+            _, score = _header_candidate(raw, earlier, 1)
+            if score >= 0:
+                raise ValueError(f"พบหัวตารางหลายรูปแบบที่แถว {earlier + 1} และ {index + 1} กรุณาจัดคอลัมน์ให้ตรงกันหรือแยกชีตก่อนนำเข้า")
     counts: dict[str, int] = {}
     positions, names = [], []
     for pos, name in enumerate(headers):
@@ -183,8 +189,21 @@ def parse_sheet(raw: pd.DataFrame, filename: str, sheet: str, override=None) -> 
     totals = frame[data_cols].apply(lambda col: col.map(clean_text).str.match(
         r"^(?:รวม|รวมทั้งสิ้น|รวมทั้งหมด|ยอดรวม|รวมยอด|grand\s*total|total)(?:\s|$)", case=False
     )).any(axis=1)
-    # Exclude repeated headers printed between report pages.
-    repeated = frame[data_cols].apply(lambda col: col.map(token).eq(token(col.name.split("__")[0]))).sum(axis=1) >= 3
+    # Repeated headers may be removed only if their columns stay aligned.
+    # A concatenated report with a different layout must not silently assign
+    # later rows to the first report's financial columns.
+    canonical_raw = raw.iloc[index + depth:].apply(lambda col: col.map(canonical_header))
+    canonical_cells = canonical_raw.iloc[:, positions].set_axis(data_cols, axis=1)
+    header_like = canonical_raw.isin(set(LOOKUP.values())).sum(axis=1).ge(3)
+    for row_index in canonical_raw.index[header_like]:
+        cells = canonical_raw.loc[row_index]
+        recognised = set(cells).intersection(LOOKUP.values())
+        if not recognised.intersection(CODE_COLUMNS) or not recognised.intersection(BUDGET_AMOUNTS + STM_AMOUNTS + IDENTIFIERS):
+            continue
+        shifted = [str(cells.iloc[pos]) for pos in range(len(cells)) if cells.iloc[pos] in LOOKUP.values() and cells.iloc[pos] != headers[pos]]
+        if shifted:
+            raise ValueError(f"หัวตารางซ้ำที่แถว {row_index + 1} เรียงคอลัมน์ต่างจากตารางแรก ({', '.join(shifted[:4])}) กรุณาจัดคอลัมน์ให้ตรงกันหรือแยกเป็นคนละชีต/ไฟล์ก่อนนำเข้า")
+    repeated = canonical_cells.apply(lambda col: col.eq(col.name.split("__")[0])).sum(axis=1) >= 3
     removed = blank | totals | repeated
     frame = frame.loc[~removed].reset_index(drop=True)
     warnings = []

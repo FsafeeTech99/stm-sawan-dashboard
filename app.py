@@ -20,7 +20,7 @@ from dashboard import focus_ui as fu
 from dashboard import data as data_module
 # Streamlit may rerun app.py while imported modules from the prior release
 # remain cached. Refresh these changed schemas once, before importing functions.
-if not hasattr(data_module, "FOCUS_SCHEMA_VERSION"):
+if getattr(data_module, "FOCUS_SCHEMA_VERSION", 0) < 2:
     importlib.reload(data_module)
 if "HC-DRUG" not in bd.FOCUS:
     importlib.reload(bd)
@@ -28,7 +28,7 @@ import hashlib
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,
     STM_AMOUNTS, STM_COLUMNS, category_summary, combine_records, content_hash, details, excel_bytes, filter_records,
-    first_column, money, normalize_code, prepare_records, read_workbook, reconcile, restrict_to_facility, signed_totals, summarize,
+    clean_text, first_column, money, normalize_code, prepare_records, read_workbook, reconcile, restrict_to_facility, signed_totals, summarize,
 )
 
 st.set_page_config(page_title="KhamTechReCheck • งบพึงรับ & STM", page_icon="🏥", layout="wide")
@@ -72,6 +72,14 @@ st.markdown("""
  @media(max-width:1000px) {.money-grid {grid-template-columns:repeat(2,minmax(0,1fr));}.money-card.navy{grid-column:1/-1;}}
  @media(max-width:550px) {.hero {padding:22px;}.money-card{padding:14px;}.block-container{padding-left:1rem;padding-right:1rem;}}
  @media(prefers-reduced-motion:reduce) {.money-card,.stButton button,.stDownloadButton button{transition:none;transform:none!important;}}
+ .upload-intro {background:linear-gradient(135deg,#12566b,#087f83);padding:18px;border-radius:16px;color:white;margin:10px 0 16px;box-shadow:0 7px 20px #12566b20;}
+ .upload-intro strong {font-size:1.18rem;display:block;margin-bottom:8px;}
+ .upload-intro p {font-size:.85rem;color:#d6f4ee;margin:0;}
+ .st-key-upload_budget,.st-key-upload_stm {border:2px solid #18a69a!important;border-radius:16px!important;background:#fff;padding:14px!important;margin-bottom:14px;}
+ .st-key-upload_stm {border-color:#5686d6!important;}
+ .st-key-upload_budget [data-testid="stFileUploaderDropzone"],.st-key-upload_stm [data-testid="stFileUploaderDropzone"] {background:#edf9f5;border:1px dashed #18a69a;border-radius:12px;}
+ .st-key-upload_stm [data-testid="stFileUploaderDropzone"] {background:#eef4ff;border-color:#5686d6;}
+ [data-testid="stFileUploader"] button {font-weight:700;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -193,19 +201,38 @@ def load_group(uploads, group, demo=False):
     parsed, errors, duplicates = [], [], []
     seen = set()
     active_cache_keys = set()
+    unique = []
     for filename, content in uploads:
         digest = content_hash(content)
         if digest in seen:
             duplicates.append(filename)
             continue
         seen.add(digest)
-        with st.sidebar.expander(f"ตั้งค่าหัวตาราง · {filename}", expanded=False):
-            automatic = st.checkbox("ตรวจหัวตารางอัตโนมัติ", value=True, disabled=demo, key=f"auto_{group}_{digest}")
+        unique.append((filename, content, digest))
+    preferences = st.session_state.setdefault("import_header_preferences", {})
+    selected_digest = None
+    if unique:
+        file_choices = {f"{filename} · {digest[:8]}": digest for filename, _, digest in unique}
+        with st.sidebar.expander("แก้หัวตารางรายไฟล์ · " + ("พึงรับ" if group == "budget" else "STM")):
+            select_key = f"header_file_choice_{group}"
+            if st.session_state.get(select_key) not in file_choices:
+                st.session_state[select_key] = next(iter(file_choices))
+            selected_digest = file_choices[st.selectbox("เลือกไฟล์ที่ต้องการตั้งหัวตาราง", list(file_choices), key=select_key)]
+            preference_key = f"{group}_{selected_digest}"
+            saved = preferences.get(preference_key)
+            automatic = st.checkbox("ตรวจหัวตารางอัตโนมัติ", value=saved is None, disabled=demo, key=f"auto_{group}_{selected_digest}")
             override = None
             if not automatic:
                 override = int(st.number_input("เลขแถวหัวตาราง (เริ่มที่ 1)", min_value=1, max_value=500,
-                                               value=8, key=f"header_{group}_{digest}")) - 1
-        key = f"parsed_{group}_{filename}_{digest}_{override}"
+                                               value=8 if saved is None else saved + 1, key=f"header_{group}_{selected_digest}")) - 1
+            preferences[preference_key] = override
+            st.caption("เลือกแก้ทีละไฟล์ ค่าของไฟล์อื่นยังคงอยู่ในเซสชัน")
+    progress = st.progress(0, text=f"กำลังอ่าน {'พึงรับ' if group == 'budget' else 'STM'} · {len(unique):,} ไฟล์") if len(unique) > 1 else None
+    for index, (filename, content, digest) in enumerate(unique):
+        if progress and (index % 5 == 0 or index == len(unique) - 1):
+            progress.progress((index + 1) / len(unique), text=f"อ่านไฟล์ {index + 1:,} / {len(unique):,} · {filename}")
+        override = preferences.get(f"{group}_{digest}")
+        key = f"parsed_{group}_v2_{filename}_{digest}_{override}"
         active_cache_keys.add(key)
         # Session cache avoids cross-user caching of patient data.
         if key not in st.session_state:
@@ -215,8 +242,12 @@ def load_group(uploads, group, demo=False):
                 errors.append(f"{filename}: อ่านไฟล์ไม่สำเร็จ ({type(exc).__name__}) กรุณาตรวจว่าไฟล์ไม่เสียหายหรือมีรหัสผ่าน")
                 continue
         sheets, sheet_errors = st.session_state[key]
+        for sheet in sheets:
+            sheet.file_digest = digest
         parsed.extend(sheets)
         errors.extend(sheet_errors)
+    if progress:
+        progress.empty()
     for key in list(st.session_state):
         if key.startswith(f"parsed_{group}_") and key not in active_cache_keys:
             del st.session_state[key]
@@ -226,28 +257,52 @@ def load_group(uploads, group, demo=False):
 def mapped_group(parsed_sheets, group, directory, demo, scope=None):
     frames, audits, warnings = [], [], []
     label = "งบพึงรับ" if group == "budget" else "STM"
+    preferences = st.session_state.setdefault("import_mapping_preferences", {})
+    def sheet_key(sheet):
+        identity = f"{sheet.filename}|{sheet.file_digest}|{sheet.sheet}|{sheet.header_row}"
+        return f"map_{group}_" + hashlib.sha256(identity.encode()).hexdigest()[:20]
+    selected_key = None
+    if parsed_sheets:
+        choices = {f"{sheet.filename} / {sheet.sheet} · {sheet.file_digest[:8]}": sheet_key(sheet) for sheet in parsed_sheets}
+        with st.sidebar.expander(f"จับคู่คอลัมน์รายชีต · {label}"):
+            select_key = f"mapping_sheet_choice_{group}"
+            if st.session_state.get(select_key) not in choices:
+                st.session_state[select_key] = next(iter(choices))
+            selected_key = choices[st.selectbox("เลือกไฟล์ / ชีตที่ต้องการปรับ", list(choices), key=select_key)]
+            editor = st.container()
     for parsed in parsed_sheets:
         df = parsed.frame
         columns = [c for c in df.columns if not c.startswith("_")]
         auto_facility = first_column(df, ["HSUB", "HCODE"])
         auto_amount = first_column(df, BUDGET_AMOUNTS if group == "budget" else STM_AMOUNTS)
         auto_name = first_column(df, NAME_COLUMNS)
-        auto_period = first_column(df, PERIOD_COLUMNS)
-        key = f"map_{group}_{parsed.filename}_{parsed.sheet}_{parsed.header_row}"
-        with st.sidebar.expander(f"จับคู่คอลัมน์ {label} · {parsed.filename} / {parsed.sheet}", expanded=not auto_amount):
-            st.caption(f"หัวตารางแถว {parsed.header_row} · {len(df):,} รายการ")
-            options = ["— เลือกคอลัมน์ —"] + columns
-            facility = st.selectbox("คอลัมน์รหัส รพ.สต.", options,
-                                    index=options.index(auto_facility) if auto_facility else 0, key=key + "_code", disabled=demo or bool(scope))
-            if scope:
-                facility = auto_facility
-            amount = st.selectbox("คอลัมน์ยอดเงิน (บาท)", options,
-                                  index=options.index(auto_amount) if auto_amount else 0, key=key + "_amount", disabled=demo)
-            optional = ["— ไม่ใช้ —"] + columns
-            name = st.selectbox("ชื่อหน่วยบริการ", optional, index=optional.index(auto_name) if auto_name else 0, key=key + "_name", disabled=demo)
-            period = st.selectbox("คอลัมน์งวดข้อมูล / REP", optional, index=optional.index(auto_period) if auto_period else 0, key=key + "_period", disabled=demo)
-            manual_period = st.text_input("กำหนดงวดให้ทั้งชีต (แทนค่าคอลัมน์งวด)",
-                                          placeholder="เช่น 2569-09", key=key + "_manual", disabled=demo)
+        auto_period = next((col for col in PERIOD_COLUMNS if col in df and df[col].map(clean_text).ne("").any()), None)
+        key = sheet_key(parsed)
+        saved = preferences.get(key, {})
+        facility = saved.get("facility", auto_facility)
+        amount = saved.get("amount", auto_amount)
+        name = saved.get("name", auto_name)
+        period = saved.get("period", auto_period)
+        manual_period = saved.get("manual_period", "")
+        if key == selected_key:
+            with editor:
+                st.caption(f"หัวตารางแถว {parsed.header_row} · {len(df):,} รายการ")
+                options = ["— เลือกคอลัมน์ —"] + columns
+                facility = st.selectbox("คอลัมน์รหัส รพ.สต.", options,
+                                        index=options.index(facility) if facility in columns else 0, key=key + "_code", disabled=demo or bool(scope))
+                amount = st.selectbox("คอลัมน์ยอดเงิน (บาท)", options,
+                                      index=options.index(amount) if amount in columns else 0, key=key + "_amount", disabled=demo)
+                optional = ["— ไม่ใช้ —"] + columns
+                name = st.selectbox("ชื่อหน่วยบริการ", optional, index=optional.index(name) if name in columns else 0, key=key + "_name", disabled=demo)
+                period = st.selectbox("คอลัมน์งวดข้อมูล / REP", optional, index=optional.index(period) if period in columns else 0, key=key + "_period", disabled=demo)
+                manual_period = st.text_input("กำหนดงวดให้ทั้งชีต (แทนค่าคอลัมน์งวด)",
+                                              value=manual_period, placeholder="เว้นว่างเมื่อไฟล์รวมหลาย REP", key=key + "_manual", disabled=demo)
+                st.caption("ระบบเลือก REP ก่อนเดือน เพื่อแยก 2–3 งวดในเดือนเดียวกันได้ • ไฟล์รวมหลายงวดไม่ควรกรอกงวดเดียวทับทั้งชีต")
+                preferences[key] = dict(facility=facility, amount=amount, name=name, period=period, manual_period=manual_period)
+        if scope:
+            facility = auto_facility
+        if manual_period and auto_period and df[auto_period].map(clean_text).replace("", pd.NA).nunique() > 1:
+            warnings.append(f"{parsed.filename} / {parsed.sheet}: ผู้ใช้กำหนดงวดเดียวแทนข้อมูลหลายงวด กรุณาตรวจว่าตั้งใจรวมงวด")
         if facility not in columns or amount not in columns:
             warnings.append(f"{parsed.filename} / {parsed.sheet}: ยังไม่ได้เลือกคอลัมน์รหัสและยอดเงิน ไม่รวมชีตนี้ในการสรุป")
             continue
@@ -319,7 +374,7 @@ def dataset_tab(frame, group, audits, uploaded_count):
         money_cols[2].metric("PP สุทธิ", "ไม่มีข้อมูลครบ" if pp is None else f"{pp:,.2f}", "บาท", delta_color="off")
         st.subheader("ชดเชยราย รพ.สต. แยกหมวดเงิน")
         if group == "budget":
-            st.caption("รวมไฟล์พึงรับ รพ.สต. 19–21 ไฟล์ตามหัวตารางตัวอย่าง ใช้ HSUB หรือ HCODE ของผู้ให้บริการ")
+            st.caption("รวมไฟล์พึงรับ รพ.สต. จากไฟล์ดิบหรือไฟล์ที่รวมแล้ว ใช้ HSUB หรือ HCODE ของผู้ให้บริการ")
         chosen = st.multiselect("หมวดเงินที่ต้องการดู", CATEGORY_COLUMNS,
                                default=["OP", "ยอดชดเชยที่จ่ายจริง", "HC", "DRUG", "AE", "DRUG__2", "INST", "ยอดชดเชยที่จ่ายจริง__2", "DMIS_DRUG", "Palliative care", "DMISHD", "PP", "FS"],
                                format_func=lambda c: DISPLAY_NAMES.get(c, c), key=f"categories_{group}")
@@ -720,11 +775,21 @@ def main():
             st.session_state.last_activity = time.time()
             st.rerun()
         st.divider()
-        st.subheader("นำเข้าข้อมูล")
-        budget_uploads = st.file_uploader("1. รวมไฟล์พึงรับ รพ.สต. (19–21 ไฟล์)", type=["xls", "xlsx"], accept_multiple_files=True,
-                                         key="budget_files", disabled=demo, help="ไฟล์พึงรับตามแบบ 43 คอลัมน์ รวมได้หลายไฟล์ ใช้ HSUB หรือ HCODE ของ รพ.สต. ไม่ใช่ HCODE_PAID ของแม่ข่าย")
-        stm_uploads = st.file_uploader("2. Statement สปสช. (STM)", type=["xls", "xlsx"], accept_multiple_files=True,
-                                      key="stm_files", disabled=demo, help="รองรับ STM ทั้ง 25 ไฟล์ และทุกชีตที่มีตาราง")
+        st.markdown('<div class="upload-intro"><strong>📥 เริ่มที่นี่ · นำเข้า Excel</strong><p>ไฟล์ดิบหลายไฟล์ หรือไฟล์รวมรายเดือน<br>เลือกหลายไฟล์พร้อมกันได้ · XLS / XLSX</p></div>', unsafe_allow_html=True)
+        with st.container(border=True, key="upload_budget"):
+            st.markdown("**01 / พึงรับ รพ.สต.**")
+            budget_uploads = st.file_uploader("1. พึงรับ รพ.สต. · ไฟล์ดิบหรือไฟล์รวม", type=["xls", "xlsx"], accept_multiple_files=True,
+                                             key="budget_files", disabled=demo, help="ไม่จำกัดที่ 19–20 ไฟล์ เลือกหลายไฟล์หรือไฟล์รวมที่ยังมีรายรายการและ HSUB/HCODE ได้ สูงสุด 100 MB ต่อไฟล์")
+            st.caption("เลือกทั้งหมดด้วย Ctrl + A หรือลากไฟล์ลงช่องนี้")
+        with st.container(border=True, key="upload_stm"):
+            st.markdown("**02 / Statement สปสช.**")
+            stm_uploads = st.file_uploader("2. Statement สปสช. (STM)", type=["xls", "xlsx"], accept_multiple_files=True,
+                                          key="stm_files", disabled=demo, help="ไม่จำกัดที่ 25 ไฟล์ อ่านทุกชีตที่มีหัวตาราง ใช้ REP รายแถวเพื่อแยกงวด สูงสุด 100 MB ต่อไฟล์")
+            st.caption("ไฟล์รวมหลายงวดควรเก็บ REP ของทุกแถวไว้")
+        upload_size = sum(file.size if hasattr(file, 'size') else len(file.getvalue()) for file in budget_uploads + stm_uploads)
+        st.info(f"เลือกแล้ว: พึงรับ {len(budget_uploads):,} ไฟล์ · STM {len(stm_uploads):,} ไฟล์\n\nขนาดรวม {upload_size / 1024 ** 2:,.1f} MB · สูงสุด 100 MB ต่อไฟล์")
+        with st.expander("ไฟล์รวมแบบไหนนำเข้าได้? / 100–200 ไฟล์"):
+            st.markdown("- **ไฟล์ดิบ:** เลือกหลายไฟล์พร้อมกัน ระบบอ่านหัวตารางของแต่ละไฟล์\n- **ไฟล์รวม:** ต่อข้อมูลเป็นแถวใต้หัวคอลัมน์เดียวกัน หรือแยกแต่ละงวดไว้คนละชีต\n- เก็บรหัสหน่วยบริการ รายการ และ REP รายแถวไว้ อย่าเหลือเพียงยอดสรุป\n- ถ้าเรียงคอลัมน์ต่างกันในชีตเดียว ให้จัดให้ตรงกันหรือแยกชีตก่อน\n- ระบบไม่ได้กำหนดเพดาน 20 ไฟล์ แต่ 100–200 ไฟล์ขนาดใหญ่ขึ้นกับจำนวนแถวและหน่วยความจำของเครื่อง/เว็บ\n- เลือกไฟล์ดิบหรือไฟล์รวมที่ครอบคลุมงวดนั้นอย่างใดอย่างหนึ่ง เพื่อลดความเสี่ยงนับข้อมูลซ้ำ")
         st.caption("แต่ละคนอัปโหลดและกรองของตนเอง ข้อมูลแยกตามเซสชัน ไม่บันทึกไฟล์ผู้ป่วยลงดิสก์")
         evidence = clinical_sidebar(scope, demo)
         fu.mapping_controls()
@@ -779,6 +844,9 @@ def main():
             for message in notices:
                 st.warning(message)
     if audits:
+        imported_count = sum(len(df) for df in datasets.values())
+        known_periods = set().union(*(set(df['_period']) - {'ยังไม่ระบุงวด'} for df in datasets.values() if not df.empty))
+        st.success(f"ประมวลผลแล้ว · {len(audits):,} ชีต · {imported_count:,} รายการหลังจัดการข้อมูลซ้ำ · {len(known_periods):,} งวด / REP")
         with st.expander("รายละเอียดการตรวจหัวตารางและคุณภาพข้อมูล"):
             st.dataframe(pd.DataFrame(audits), hide_index=True, width="stretch")
     usable = [df for df in datasets.values() if not df.empty]
