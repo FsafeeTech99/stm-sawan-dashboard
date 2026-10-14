@@ -28,6 +28,20 @@ def visits():
 
 
 class LocalTests(TestCase):
+    def test_connection_errors_are_specific_and_never_echo_secret_details(self):
+        secret = 'DO_NOT_PRINT_PRIVATE_PASSWORD_OR_SQL'
+        self.assertIn('ไม่เปิด TLS', lj.user_error_message(lj.TLSUnavailable(2026, secret)))
+        for code, expected in [(1045, 'ฐานปฏิเสธบัญชี'), (1049, 'ไม่พบชื่อฐาน'),
+                               (1142, 'ไม่มีสิทธิ SELECT'), (2003, 'ติดต่อ MySQL ไม่ได้')]:
+            message = lj.user_error_message(pymysql.err.OperationalError(code, secret))
+            self.assertIn(expected, message)
+            self.assertNotIn(secret, message)
+        self.assertNotIn(secret, lj.user_error_message(RuntimeError(secret)))
+        with self.assertRaises(lj.ConnectionSettingsError) as failed:
+            lj.connect_database(dict(host='8.8.8.8', port=3306, transport='local'))
+        self.assertIn('Internet', lj.user_error_message(failed.exception))
+        self.assertNotIn('366', lj.user_error_message(failed.exception))
+
     def test_adapter_detects_schema_and_preserves_visit_keys(self):
         connection, cursor = MagicMock(), MagicMock()
         connection.cursor.return_value.__enter__.return_value = cursor

@@ -396,10 +396,12 @@ def local_clinical(scope):
                 st.session_state.clinical_records = (scope, records, dates)
             except lj.SchemaMismatch as error:
                 st.error(str(error)) # Only table/column metadata, never credentials.
+            except lj.ConnectionSettingsError as error:
+                st.error(lj.user_error_message(error))
             except ValueError:
-                st.error("ตรวจ host/ช่องทางเชื่อมและช่วงวันที่ไม่เกิน 366 วัน: โหมดเครื่อง/LAN ไม่อนุญาต IP สาธารณะ; SSH ต้องเป็น localhost ของ tunnel")
-            except Exception:
-                st.error("เชื่อม JHCIS ไม่สำเร็จ ตรวจ host, พอร์ต, บัญชี, สิทธิ SELECT และช่องทางเข้ารหัส ไม่มีการเปลี่ยนไปเชื่อมแบบไม่เข้ารหัสให้อัตโนมัติ")
+                st.error("ค่าเชื่อมฐานหรือข้อมูลที่ได้รับมีรูปแบบไม่ถูกต้อง กรุณาตรวจค่ากับผู้ดูแล JHCIS")
+            except Exception as error:
+                st.error(lj.user_error_message(error))
             finally:
                 config["password"] = None
     if st.button("ล้างข้อมูลและค่าเชื่อม JHCIS", key="local_db_clear"):

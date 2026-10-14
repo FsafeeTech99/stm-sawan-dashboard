@@ -13,11 +13,42 @@ class SchemaMismatch(ValueError):
     pass
 
 
+class ConnectionSettingsError(ValueError):
+    """Fixed user-facing messages; never contains credentials or SQL."""
+
+
+class TLSUnavailable(pymysql.err.OperationalError):
+    pass
+
+
+def user_error_message(error):
+    if isinstance(error, ConnectionSettingsError):
+        return str(error)
+    if isinstance(error, TLSUnavailable):
+        return 'เซิร์ฟเวอร์ไม่เปิด TLS จึงใช้ Internet พร้อม TLS ไม่ได้ กรุณาเปิด SSH tunnel แล้วเลือกโหมด SSH หรือใช้ IP ภายในผ่าน LAN/VPN'
+    code = error.args[0] if error.args and isinstance(error.args[0], int) else None
+    messages = {
+        1045: 'ฐานปฏิเสธบัญชี (1045): ตรวจ username/password และสิทธิให้บัญชีนี้เชื่อมจากเครื่องคุณ',
+        1049: 'ไม่พบชื่อฐาน (1049): ตรวจชื่อ database ที่โปรแกรม JHCIS ใช้จริง',
+        1142: 'บัญชีฐานไม่มีสิทธิ SELECT ที่จำเป็น (1142): ให้ผู้ดูแลตรวจสิทธิอ่านตาราง JHCIS',
+        2003: 'ติดต่อ MySQL ไม่ได้ (2003): ตรวจ IP ของเครื่องฐานและพอร์ต ถ้าใช้ SSH ให้เปิด tunnel ไว้ก่อน',
+        2013: 'การเชื่อม MySQL ขาดระหว่างอ่าน (2013): ตรวจเส้นทางเชื่อมและลองลดช่วงวันที่',
+        2026: 'TLS หรือ certificate ไม่ผ่าน (2026): ให้ผู้ดูแลตรวจ TLS และชื่อ host ที่ตรง certificate หรือใช้ SSH tunnel',
+    }
+    if code in messages:
+        return messages[code]
+    if isinstance(error, socket.gaierror):
+        return 'หาเครื่องฐานจาก host ที่กรอกไม่พบ กรุณาตรวจ IP หรือชื่อเครื่อง JHCIS'
+    if isinstance(error, PermissionError):
+        return 'ระบบของเครื่องที่รัน Dashboard ไม่อนุญาตการเชื่อมฐานนี้ กรุณาตรวจสิทธิและเส้นทางเชื่อมกับผู้ดูแล'
+    return 'อ่าน JHCIS ไม่สำเร็จ: ตรวจการเชื่อม สิทธิ SELECT และโครงสร้างตารางกับผู้ดูแล ไม่มีการแสดงรหัสผ่านหรือข้อความ SQL ใน error'
+
+
 class RequiredTLSConnection(pymysql.connections.Connection):
     def _request_authentication(self):
         # Older PyMySQL versions can silently downgrade when server SSL is absent.
         if self.ssl and not self.server_capabilities & CLIENT.SSL:
-            raise pymysql.err.OperationalError(2026, 'TLS required before authentication')
+            raise TLSUnavailable(2026, 'TLS required before authentication')
         return super()._request_authentication()
 
 
@@ -25,13 +56,13 @@ def connect_database(config):
     host = str(config['host']).strip()
     transport = config.get('transport', 'tls')
     if transport not in ('tls', 'local', 'ssh'):
-        raise ValueError('Unsupported transport')
+        raise ConnectionSettingsError('เลือกช่องทางเชื่อม JHCIS ที่รองรับ')
     if transport == 'ssh' and host not in ('127.0.0.1', '::1', 'localhost'):
-        raise ValueError('SSH mode requires loopback tunnel endpoint')
+        raise ConnectionSettingsError('โหมด SSH ต้องกรอก host เป็น 127.0.0.1 หรือ localhost พร้อมพอร์ตของ tunnel ที่เปิดไว้แล้ว')
     if transport == 'local':
         addresses = socket.getaddrinfo(host, int(config.get('port', 3306)), type=socket.SOCK_STREAM)
         if not addresses or any(not (ipaddress.ip_address(r[4][0]).is_private or ipaddress.ip_address(r[4][0]).is_loopback) for r in addresses):
-            raise ValueError('Unencrypted local mode cannot connect to public Internet addresses')
+            raise ConnectionSettingsError('host ที่กรอกเป็นปลายทางบน Internet จึงใช้โหมดเครื่องนี้/LAN ไม่ได้ กรุณาใช้ IP ภายในของเครื่องฐาน JHCIS หรือเปิด SSH tunnel แล้วเลือกโหมด SSH')
         # Pin the validated resolved address; a second DNS lookup cannot change it.
         host = addresses[0][4][0]
     tls = transport == 'tls'
@@ -74,7 +105,7 @@ def plan_schema(schema):
 
 def read_standard(config, facility, start, end, max_rows=50000):
     if not isinstance(start, date) or not isinstance(end, date) or start > end or (end - start).days > 366:
-        raise ValueError('Choose up to 366 days')
+        raise ConnectionSettingsError('วันที่เริ่มต้องไม่หลังวันสิ้นสุด และช่วงวันที่ต้องไม่เกิน 366 วัน')
     cap = min(max(int(max_rows), 1), 100000)
     connection = connect_database(config)
     try:
@@ -99,7 +130,7 @@ def read_standard(config, facility, start, end, max_rows=50000):
             cursor.execute(select + base + where + ' LIMIT %s', params)
             visits = pd.DataFrame(cursor.fetchall(), columns=VIEW_COLUMNS[:8])
             if len(visits) > cap:
-                raise ValueError('Too many visits; narrow date range')
+                raise ConnectionSettingsError('จำนวน visit เกินขีดจำกัด กรุณาลดช่วงวันที่แล้วอ่านใหม่')
             # Refuse collisions rather than attach another patient's drugs to a visit.
             if visits.duplicated(['facility', 'visit_id'], keep=False).any():
                 raise SchemaMismatch('พบ visit ซ้ำจากการ join คนไข้ จึงยังไม่ใช้ผลชุดนี้')
@@ -109,7 +140,7 @@ def read_standard(config, facility, start, end, max_rows=50000):
                 cursor.execute(query + where + ' LIMIT %s', (facility, start.isoformat(), end.isoformat(), cap * 20 + 1))
                 codes = cursor.fetchall()
                 if len(codes) > cap * 20:
-                    raise ValueError('Too many clinical codes; narrow date range')
+                    raise ConnectionSettingsError('จำนวนรหัสวินิจฉัย/ยาเกินขีดจำกัด กรุณาลดช่วงวันที่แล้วอ่านใหม่')
                 lookup = {}
                 for row in codes:
                     key_pair = (str(row['facility']), str(row['visit_id']))
