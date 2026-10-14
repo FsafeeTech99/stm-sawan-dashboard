@@ -76,7 +76,9 @@ class AppTests(unittest.TestCase):
             self.assertEqual(len(app.metric), 0)
 
     def test_no_credentials_fail_closed_and_demo(self):
-        app = AppTest.from_file(APP, default_timeout=45).run()
+        app = AppTest.from_file(APP, default_timeout=45)
+        app.secrets["auth"] = {"users": {}}
+        app.run()
         self.assertFalse(app.exception)
         self.assertTrue(app.button[0].disabled)
         self.assertEqual(len(app.tabs), 0)
