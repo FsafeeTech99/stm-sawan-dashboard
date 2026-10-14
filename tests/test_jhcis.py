@@ -107,6 +107,7 @@ class JhcIsTests(TestCase):
         app = AppTest.from_file(app_path, default_timeout=45)
         app.secrets['jhcis'] = {'05542': {'enabled': True}}
         app.session_state['user'] = 'Admin05542'
+        app.session_state['clinical_input_mode'] = 'เชื่อมฐาน JHCIS'
         app.session_state['last_activity'] = time.time()
         with patch('dashboard.jhcis.read_view') as reader:
             app.run()
@@ -128,9 +129,9 @@ class JhcIsTests(TestCase):
             app.button(key='jhcis_read').click().run()
             self.assertFalse(app.exception)
             reader.assert_called_once()
-            clinical_tables = [element.value for element in app.dataframe if 'ผลตรวจเงื่อนไข JHCIS' in element.value]
+            clinical_tables = [element.value for element in app.dataframe if 'ผลตรวจเงื่อนไข ข้อมูลบริการ' in element.value]
             self.assertTrue(clinical_tables)
-            self.assertTrue(any(table['ผลตรวจเงื่อนไข JHCIS'].str.contains('ตรงเงื่อนไขหญิงไทย').any() for table in clinical_tables))
+            self.assertTrue(any(table['ผลตรวจเงื่อนไข ข้อมูลบริการ'].str.contains('ตรงเงื่อนไขหญิงไทย').any() for table in clinical_tables))
             app.button(key='jhcis_clear').click().run()
             self.assertFalse(app.exception)
             self.assertNotIn('clinical_records', app.session_state)

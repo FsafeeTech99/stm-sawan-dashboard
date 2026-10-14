@@ -105,6 +105,7 @@ class LocalTests(TestCase):
     def test_local_form_hidden_on_cloud_and_reads_only_when_submitted(self):
         app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'app.py'), default_timeout=45)
         app.session_state['user'] = 'Admin05542'
+        app.session_state['clinical_input_mode'] = 'เชื่อมฐาน JHCIS'
         app.session_state['last_activity'] = time.time()
         with patch.dict(os.environ, {'KHAMTECH_LOCAL': ''}):
             app.run()

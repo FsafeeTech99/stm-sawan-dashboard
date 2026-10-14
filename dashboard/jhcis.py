@@ -112,7 +112,7 @@ def match_claims(claims, evidence, facility, female_values=('2', 'F', 'FEMALE', 
                 name_lookup.setdefault((row['_name'], row['_date']), []).append(idx)
     results = []
     for _, claim in claims.iterrows():
-        status, rule, explanation, visit, age = 'ยังจับคู่ไม่ได้', 'ยังไม่มีหลักฐานบริการ', '', '', None
+        status, rule, explanation, visit, age, source = 'ยังจับคู่ไม่ได้', 'ยังไม่มีหลักฐานบริการ', '', '', None, ''
         pid, day = identifier(claim.get('PID')), service_date(claim.get('วันเข้ารักษา'))
         candidates = []
         if normalize_code(claim.get('_facility')) != facility:
@@ -123,6 +123,7 @@ def match_claims(claims, evidence, facility, female_values=('2', 'F', 'FEMALE', 
             candidates = pid_lookup.get((pid, day), []) if pid else []
             if candidates:
                 selected = clinical.loc[candidates]
+                source = ' / '.join(sorted(set(selected['_evidence_source'].dropna().map(clean_text)))) if '_evidence_source' in selected else 'ฐาน JHCIS'
                 visits = set(selected['_visit'])
                 if '' in visits or len(visits) != 1:
                     status = 'หลายครั้งรับบริการ/visit ไม่ครบ • รอตรวจสอบ'
@@ -140,8 +141,8 @@ def match_claims(claims, evidence, facility, female_values=('2', 'F', 'FEMALE', 
                     explanation = f'พบ {clinical.loc[by_name, "_visit"].nunique()} visit ที่อาจตรง ไม่ยืนยันบริการอัตโนมัติ'
                 elif not pid:
                     status = 'เลขบัตรขาด/รูปแบบไม่ครบ'
-        results.append([status, visit, age, rule, explanation])
-    return pd.DataFrame(results, index=claims.index, columns=['การจับคู่ JHCIS', 'JHCIS visit', 'อายุวันรับบริการ', 'ผลตรวจเงื่อนไข JHCIS', 'หลักฐาน/ข้อสังเกต JHCIS'])
+        results.append([status, visit, age, rule, explanation, source])
+    return pd.DataFrame(results, index=claims.index, columns=['การจับคู่ JHCIS', 'JHCIS visit', 'อายุวันรับบริการ', 'ผลตรวจเงื่อนไข JHCIS', 'หลักฐาน/ข้อสังเกต JHCIS', 'แหล่งข้อมูลบริการ'])
 
 
 def read_view(config, facility, start, end):

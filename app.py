@@ -14,6 +14,7 @@ from dashboard.registry import DEVELOPER_CREDIT, account_code
 from dashboard import breakdown as bd
 from dashboard import jhcis as jc
 from dashboard import local_jhcis as lj
+from dashboard import clinical_input as ci
 import hashlib
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,
@@ -394,14 +395,17 @@ def local_clinical(scope):
                 with st.spinner("ตรวจโครงสร้างและอ่าน JHCIS…"):
                     records = lj.read_standard(config, scope, *dates)
                 st.session_state.clinical_records = (scope, records, dates)
-            except lj.SchemaMismatch as error:
-                st.error(str(error)) # Only table/column metadata, never credentials.
-            except lj.ConnectionSettingsError as error:
-                st.error(lj.user_error_message(error))
-            except ValueError:
-                st.error("ค่าเชื่อมฐานหรือข้อมูลที่ได้รับมีรูปแบบไม่ถูกต้อง กรุณาตรวจค่ากับผู้ดูแล JHCIS")
             except Exception as error:
-                st.error(lj.user_error_message(error))
+                # A running process can still have the previous module in sys.modules.
+                # Never resolve a newly added exception class in an except clause.
+                schema_error = getattr(lj, "SchemaMismatch", ())
+                formatter = getattr(lj, "user_error_message", None)
+                if isinstance(error, schema_error):
+                    st.error(str(error))
+                elif callable(formatter):
+                    st.error(formatter(error))
+                else:
+                    st.error("เชื่อมฐานไม่ได้ กรุณาตรวจ host/ช่องทางเชื่อม หรือใช้กรอกทีละราย/อัปโหลดข้อมูลบริการ หากเพิ่งอัปเดตโค้ดให้ปิดตัวรันแล้วเปิดใหม่")
             finally:
                 config["password"] = None
     if st.button("ล้างข้อมูลและค่าเชื่อม JHCIS", key="local_db_clear"):
@@ -422,12 +426,85 @@ def local_clinical(scope):
     return None
 
 
+def entered_clinical(scope, mode):
+    stored = st.session_state.get("entered_clinical")
+    existing = stored[1] if stored and stored[0] == scope else pd.DataFrame(columns=jc.VIEW_COLUMNS + ['_evidence_source'])
+    st.caption(f"ข้อมูลบริการของหน่วย {scope} • ใช้ข้อมูลที่ผู้ใช้กรอก/อัปโหลดประกอบการตรวจสอบ ไม่ได้ดึงจากฐาน JHCIS")
+    if mode == "กรอกทีละราย":
+        st.caption("หนึ่งแบบฟอร์มต่อหนึ่งครั้งรับบริการ • กรอกรหัสวินิจฉัยและยาของครั้งเดียวกัน")
+        with st.form("person_service_input", clear_on_submit=True):
+            pid = st.text_input("เลขบัตรประชาชน 13 หลัก", key="evidence_pid")
+            name = st.text_input("ชื่อ-นามสกุล (ถ้ามี)", key="evidence_name")
+            day = st.date_input("วันที่รับบริการ", value=pd.Timestamp.today().date(), key="evidence_day")
+            visit = st.text_input("เลขครั้งรับบริการ / visit (ถ้ามี)", key="evidence_visit")
+            sex = st.selectbox("เพศ", ["ยังไม่ระบุ", "หญิง", "ชาย"], key="evidence_sex")
+            birth = st.date_input("วันเกิด (ถ้ามี)", value=None, min_value=pd.Timestamp('1900-01-01').date(), max_value=pd.Timestamp.today().date(), key="evidence_birth")
+            nationality = st.selectbox("สัญชาติ", ["ยังไม่ระบุ", "ไทย", "อื่น ๆ"], key="evidence_nation")
+            icd = st.text_input("ICD-10 ของครั้งนี้", placeholder="เช่น Z13.0; Z30.0", key="evidence_icd")
+            drug = st.text_input("drugcode ของครั้งนี้", placeholder="เช่น 14001; 12345", key="evidence_drug")
+            add = st.form_submit_button("เพิ่มข้อมูลรายนี้", width="stretch")
+        if add:
+            values = dict(facility=scope, pid=pid, patient_name=name, service_date=day, visit_id=visit,
+                          sex='' if sex == 'ยังไม่ระบุ' else sex, birth_date=birth,
+                          nationality='' if nationality == 'ยังไม่ระบุ' else nationality, icd10=icd, drugcode=drug)
+            try:
+                records, notices = ci.manual_record(values, scope)
+                for notice in notices:
+                    st.warning(notice)
+                if not records.empty:
+                    existing = ci.merge(existing, records)
+                    st.session_state.entered_clinical = (scope, existing)
+                    st.success("เพิ่มข้อมูลบริการแล้ว เปิดแท็บรายละเอียดบริการหรือ Walk-in เพื่อเทียบยอด")
+            except ValueError as error:
+                st.error(str(error))
+    else:
+        st.caption("หนึ่งแถวต่อหนึ่งครั้งรับบริการ • ใช้เลขบัตร + วันที่เทียบกับพึงรับ/STM • ICD/ยาหลายรหัสคั่นด้วย ; ได้")
+        st.download_button("ดาวน์โหลดแม่แบบข้อมูลบริการ", ci.template_bytes(scope), "KhamTechReCheck_service_template.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="clinical_template")
+        uploads = st.file_uploader("ข้อมูลบริการรายบุคคลจาก Excel/CSV", type=['xls', 'xlsx', 'csv'], accept_multiple_files=True, key="clinical_uploads")
+        declare = st.checkbox(f"ไฟล์ที่ไม่มีรหัสหน่วยบริการเป็นข้อมูลของหน่วย {scope}", key="clinical_declare")
+        if st.button("นำเข้าข้อมูลบริการจากไฟล์", key="clinical_import"):
+            if not uploads:
+                st.info("เลือกไฟล์ข้อมูลบริการก่อน")
+            for upload in uploads or []:
+                try:
+                    content = upload.getvalue()
+                    token = hashlib.sha256(content).hexdigest()
+                    for sheet, raw in ci.read_file(upload.name, content):
+                        records, notices = ci.normalize(raw, scope, f"ผู้ใช้อัปโหลด: {upload.name} / {sheet}", declare, token + sheet)
+                        existing = ci.merge(existing, records)
+                        st.session_state.entered_clinical = (scope, existing)
+                        st.success(f"{upload.name} / {sheet}: นำเข้า {len(records):,} แถว")
+                        for notice in notices[:10]:
+                            st.warning(notice)
+                        if len(notices) > 10:
+                            st.warning(f"มีข้อสังเกตอีก {len(notices) - 10:,} แถวที่ยังไม่ได้แสดง")
+                except Exception:
+                    st.error(f"นำเข้า {upload.name} ไม่สำเร็จ ตรวจหัวตาราง รหัสหน่วย และรูปแบบข้อมูลตามแม่แบบ")
+    st.caption("ชื่ออย่างเดียวเสนอรายการให้ตรวจสอบ แต่ไม่ยืนยันตัวตนหรือบริการอัตโนมัติ")
+    if st.button("ล้างข้อมูลบริการที่กรอก/อัปโหลด", key="entered_clinical_clear"):
+        st.session_state.pop("entered_clinical", None)
+        existing = existing.iloc[:0]
+    if not existing.empty:
+        st.success(f"ข้อมูลบริการในเซสชัน {len(existing):,} แถว")
+        preview = existing[['pid', 'service_date', 'visit_id', 'icd10', 'drugcode', '_evidence_source']].copy()
+        preview['pid'] = preview.pid.map(lambda value: '*********' + value[-4:] if value else '')
+        st.dataframe(preview.rename(columns={**ci.LABELS, '_evidence_source': 'แหล่งข้อมูล'}), hide_index=True, width="stretch")
+        st.download_button("ดาวน์โหลดข้อมูลบริการเพื่อใช้ครั้งหน้า", ci.export_bytes(existing), "KhamTechReCheck_entered_services.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="entered_services_export")
+        return (existing, scope, ['2', 'F', 'FEMALE', 'หญิง'], ['ไทย', 'TH', 'THAI'])
+    return None
+
+
 def clinical_sidebar(scope, demo):
-    with st.expander("เชื่อม JHCIS • อ่านอย่างเดียว"):
+    with st.expander("ข้อมูลบริการรายบุคคล • กรอก/นำเข้า/ฐาน JHCIS"):
         st.caption("จับคู่เลขบัตร + วันรับบริการ + หน่วยบริการ • ชื่อใช้เสนอให้ตรวจสอบเท่านั้น")
         if demo:
-            st.info("โหมดตัวอย่างไม่เชื่อมฐานผู้ป่วยจริง")
+            st.info("โหมดตัวอย่างไม่รับข้อมูลผู้ป่วยจริง")
             return None
+        mode = st.radio("วิธีนำเข้าข้อมูลบริการ", ['กรอกทีละราย', 'อัปโหลด Excel/CSV', 'เชื่อมฐาน JHCIS'], key="clinical_input_mode")
+        if mode != 'เชื่อมฐาน JHCIS':
+            return entered_clinical(scope, mode)
         if os.environ.get("KHAMTECH_LOCAL") == "1":
             if st.get_option("server.address") not in ("127.0.0.1", "localhost", "::1"):
                 st.error("โหมดเครื่องส่วนตัวต้อง bind server.address = 127.0.0.1 ตามตัวเปิดโปรแกรม")
@@ -471,7 +548,12 @@ def clinical_details(frame, evidence):
     if evidence is None:
         return None
     records, scope, females, thai = evidence
-    return jc.match_claims(frame, records, scope, females, thai).reset_index(drop=True)
+    result = jc.match_claims(frame, records, scope, females, thai).reset_index(drop=True)
+    if 'แหล่งข้อมูลบริการ' not in result:
+        # Old cached matching modules still return the original five columns.
+        sources = sorted(set(records['_evidence_source'].dropna())) if '_evidence_source' in records else ['ฐาน JHCIS']
+        result['แหล่งข้อมูลบริการ'] = ('' if not sources else sources[0] if len(sources) == 1 else 'ชุดข้อมูล: ' + ' / '.join(sources))
+    return result.rename(columns={name: name.replace('JHCIS', 'ข้อมูลบริการ') for name in result.columns})
 
 
 def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
@@ -539,19 +621,19 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
     clinical = clinical_details(detail_rows, evidence)
     if clinical is not None:
         detail = pd.concat([detail, clinical], axis=1)
-        st.caption("หลักฐาน JHCIS ตรวจกฎหญิงไทยแก้มแดงที่ผู้ใช้กำหนด: หญิง อายุ 13–45 ปี ณ วันรับบริการ, Z13.0, drugcode 14001 และสัญชาติไทยใน visit เดียวกัน • ชื่ออย่างเดียวไม่ยืนยันตัวตน • ผลนี้ไม่ใช่การยืนยันสิทธิชดเชยของ สปสช.")
-        with st.expander("สรุปหลักฐาน JHCIS ของรายการที่เลือก", expanded=True):
+        st.caption("ตรวจข้อมูลบริการตามเงื่อนไขผู้ใช้: หญิง อายุ 13–45 ปี ณ วันรับบริการ, Z13.0, drugcode 14001 และสัญชาติไทยในครั้งเดียวกัน • ดูแหล่งข้อมูลว่าเป็นผู้ใช้กรอก/อัปโหลดหรือฐาน JHCIS • ผลนี้ไม่ใช่การยืนยันสิทธิชดเชยของ สปสช.")
+        with st.expander("สรุปหลักฐานบริการของรายการที่เลือก", expanded=True):
             signed = clinical.assign(_amount=detail_rows["_category_cents"].reset_index(drop=True).map(int))
             signed["_positive"] = signed["_amount"].clip(lower=0)
             signed["_negative"] = signed["_amount"].clip(upper=0)
-            evidence_summary = signed.groupby(["การจับคู่ JHCIS", "ผลตรวจเงื่อนไข JHCIS"], dropna=False).agg(
+            evidence_summary = signed.groupby(["การจับคู่ ข้อมูลบริการ", "ผลตรวจเงื่อนไข ข้อมูลบริการ"], dropna=False).agg(
                 **{"จำนวนรายการ": ("_amount", "size"), "ยอดบวกหมวดที่เลือก (บาท)": ("_positive", "sum"),
                    "ยอดติดลบหมวดที่เลือก (บาท)": ("_negative", "sum"), "ยอดสุทธิหมวดที่เลือก (บาท)": ("_amount", "sum")}).reset_index()
             for column in evidence_summary.columns[3:]:
                 evidence_summary[column] = evidence_summary[column] / 100
             st.dataframe(evidence_summary, hide_index=True, width="stretch")
     else:
-        st.caption("ยังไม่มีหลักฐาน JHCIS ในเซสชันนี้ ชื่อบริการข้างต้นยังเป็นการประมาณการจากราคา")
+        st.caption("ยังไม่มีข้อมูลบริการในเซสชันนี้ กรอกทีละรายหรืออัปโหลดที่ sidebar ได้ ชื่อบริการข้างต้นยังเป็นการประมาณการจากราคา")
     positives = sum(int(n) for n in detail_rows["_category_cents"] if n > 0) / 100
     negatives = sum(int(n) for n in detail_rows["_category_cents"] if n < 0) / 100
     metrics = st.columns(4)
@@ -571,7 +653,7 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
              "กฎชื่อประมาณการ": pd.DataFrame([[g, c / 100, name] for (g, c), name in rules.items()],
                                       columns=bd.DEFAULT_RULES.columns), "อัตราอ้างอิงจากภาพ": bd.RATE_DF}
     if clinical is not None:
-        export_tables["สรุปหลักฐาน JHCIS"] = evidence_summary
+        export_tables["สรุปหลักฐานบริการ"] = evidence_summary
     download("Export สรุปราคาและรายการที่เลือก", export_tables,
              f"KhamTechReCheck_{label.replace(' ', '_')}_details.xlsx", prefix + "_details_export")
 
