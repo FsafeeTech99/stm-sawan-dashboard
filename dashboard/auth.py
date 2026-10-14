@@ -7,8 +7,23 @@ import hmac
 import secrets
 import threading
 import time
+import json
+from pathlib import Path
+
+from dashboard.registry import FACILITIES
 
 ITERATIONS = 600_000
+
+
+def registered_users(overrides=None) -> dict:
+    """Only the approved 19 accounts exist; Secrets may replace their hashes."""
+    hashes = json.loads(Path(__file__).with_name("account_hashes.json").read_text(encoding="utf-8"))
+    users = {}
+    for code, name in FACILITIES.items():
+        username = f"Admin{code}"
+        encoded = (overrides or {}).get(username, {}).get("password_hash", hashes[username])
+        users[username] = {"display_name": name, "facility_code": code, "password_hash": encoded}
+    return users
 
 
 def hash_password(password: str) -> str:

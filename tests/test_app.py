@@ -10,6 +10,7 @@ import pandas as pd
 from streamlit.testing.v1 import AppTest
 
 from dashboard.auth import hash_password
+from dashboard.registry import DEVELOPER_CREDIT
 
 APP = str(Path(__file__).resolve().parents[1] / "app.py")
 
@@ -22,12 +23,12 @@ class AppTests(unittest.TestCase):
                 pd.DataFrame({"HSUB": [code], "งวด": ["2569-09"], "งบพึงรับ": [amount]}).to_excel(writer, index=False)
             content = output.getvalue()
             return SimpleNamespace(name=filename, getvalue=lambda: content)
-        credentials = {"users": {"tester": {"password_hash": hash_password("test-only-passphrase")}}}
+        credentials = {"users": {"Admin05542": {"password_hash": hash_password("test-only-passphrase")}}}
         apps = [AppTest.from_file(APP, default_timeout=45) for _ in range(2)]
         uploads = [uploaded("unit_A.xlsx", 5542, 1000), uploaded("unit_B.xlsx", 5555, 250)]
-        for app, file in zip(apps, uploads):
+        for app, file, username in zip(apps, uploads, ["Admin05542", "Admin05555"]):
             app.secrets["auth"] = credentials
-            app.session_state["user"] = "tester"
+            app.session_state["user"] = username
             app.session_state["last_activity"] = time.time()
             with patch("streamlit.file_uploader", side_effect=lambda label, file=file, **kwargs: [file] if label.startswith("1.") else []):
                 app.run()
@@ -57,8 +58,8 @@ class AppTests(unittest.TestCase):
             "PP": [70], "FS": [0], "ยอดชดเชยทั้งสิ้น": [70],
         }))]
         app = AppTest.from_file(APP, default_timeout=45)
-        app.secrets["auth"] = {"users": {"tester": {"password_hash": hash_password("test-only-passphrase")}}}
-        app.session_state["user"] = "tester"
+        app.secrets["auth"] = {"users": {"Admin05542": {"password_hash": hash_password("test-only-passphrase")}}}
+        app.session_state["user"] = "Admin05542"
         app.session_state["last_activity"] = time.time()
         def files(label, **kwargs):
             return budgets if label.startswith("1.") else statements
@@ -75,12 +76,13 @@ class AppTests(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertEqual(len(app.metric), 0)
 
-    def test_no_credentials_fail_closed_and_demo(self):
+    def test_fixed_accounts_need_no_secrets_and_demo_is_separate(self):
         app = AppTest.from_file(APP, default_timeout=45)
         app.secrets["auth"] = {"users": {}}
         app.run()
         self.assertFalse(app.exception)
-        self.assertTrue(app.button[0].disabled)
+        self.assertFalse(app.button[0].disabled)
+        self.assertTrue(any(DEVELOPER_CREDIT in c.value for c in app.caption))
         self.assertEqual(len(app.tabs), 0)
         app.button[1].click().run()
         self.assertFalse(app.exception)
@@ -104,10 +106,10 @@ class AppTests(unittest.TestCase):
 
     def test_login_and_logout(self):
         app = AppTest.from_file(APP, default_timeout=45)
-        app.secrets["auth"] = {"users": {"tester": {"password_hash": hash_password("test-only-passphrase"), "display_name": "ทดสอบ"}}}
+        app.secrets["auth"] = {"users": {"Admin05542": {"password_hash": hash_password("test-only-passphrase"), "display_name": "ทดสอบ"}}}
         app.run()
         self.assertFalse(app.exception)
-        app.text_input[0].set_value("tester")
+        app.text_input[0].set_value("Admin05542")
         app.text_input[1].set_value("wrong")
         app.button[0].click().run()
         self.assertFalse(app.exception)
@@ -117,7 +119,7 @@ class AppTests(unittest.TestCase):
         app.button[0].click().run()
         self.assertFalse(app.exception)
         self.assertEqual(len(app.tabs), 3)
-        self.assertEqual(app.session_state["user"], "tester")
+        self.assertEqual(app.session_state["user"], "Admin05542")
         app.button[0].click().run()
         self.assertFalse(app.exception)
         self.assertNotIn("user", app.session_state)

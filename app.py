@@ -8,11 +8,12 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from dashboard.auth import LoginThrottle, hash_password, verify_password
+from dashboard.auth import LoginThrottle, hash_password, registered_users, verify_password
+from dashboard.registry import DEVELOPER_CREDIT, account_code
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,
     STM_AMOUNTS, STM_COLUMNS, category_summary, combine_records, content_hash, details, excel_bytes, filter_records,
-    first_column, normalize_code, prepare_records, read_workbook, reconcile, signed_totals, summarize,
+    first_column, normalize_code, prepare_records, read_workbook, reconcile, restrict_to_facility, signed_totals, summarize,
 )
 
 st.set_page_config(page_title="SAWAN • งบพึงรับ & STM", page_icon="🏥", layout="wide")
@@ -50,9 +51,10 @@ def login_resources():
 
 def users_config():
     try:
-        return dict(st.secrets.get("auth", {}).get("users", {}))
+        overrides = dict(st.secrets.get("auth", {}).get("users", {}))
     except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
-        return {}
+        overrides = {}
+    return registered_users(overrides)
 
 
 def clear_session():
@@ -69,6 +71,8 @@ def authenticate() -> tuple[str, bool]:
             return str(users[st.session_state.user].get("display_name", st.session_state.user)), False
         clear_session()
         st.warning("หมดเวลาใช้งานหลังไม่มีการทำรายการ 30 นาที กรุณาเข้าสู่ระบบอีกครั้ง")
+    elif st.session_state.get("user"):
+        clear_session()
     if st.session_state.get("demo"):
         return "ผู้เยี่ยมชม · ข้อมูลจำลอง", True
     hero()
@@ -76,10 +80,9 @@ def authenticate() -> tuple[str, bool]:
     with left:
         st.subheader("เข้าสู่ระบบสำหรับเจ้าหน้าที่")
         st.caption("อัปโหลดไฟล์ ตรวจยอดรายหน่วยบริการ และส่งออกข้อมูลที่กรองแล้ว")
-        if not users:
-            st.info("ยังไม่ได้ตั้งค่าบัญชีผู้ใช้ ผู้ดูแลต้องเพิ่ม password hash ใน .streamlit/secrets.toml ตาม README ก่อนอัปโหลดข้อมูลจริง")
+        st.info("ใช้ชื่อผู้ใช้ Admin ตามด้วยรหัสหน่วยบริการ 5 หลัก เช่น Admin05542 รหัสผ่านเริ่มต้นคือรหัสหน่วยบริการ 5 หลัก ระบบแสดงข้อมูลเฉพาะหน่วยบริการของบัญชี")
         with st.form("login"):
-            username = st.text_input("ชื่อผู้ใช้")
+            username = st.text_input("ชื่อผู้ใช้", placeholder="Admin05542")
             password = st.text_input("รหัสผ่าน", type="password")
             submitted = st.form_submit_button("เข้าสู่ระบบ", type="primary", width="stretch", disabled=not users)
         if submitted:
@@ -110,6 +113,9 @@ def authenticate() -> tuple[str, bool]:
         - Excel พร้อมตารางสรุปและข้อมูลอ้างอิงไฟล์ต้นทาง
         """)
         st.caption("โหมดตัวอย่างใช้ข้อมูลสมมติเท่านั้น และไม่เปิดให้อัปโหลดไฟล์จริง")
+        with st.expander("รายชื่อหน่วยบริการที่เข้าใช้งานได้ · 19 แห่ง"):
+            st.dataframe(pd.DataFrame(DEFAULT_DIRECTORY.items(), columns=["รหัส", "ชื่อหน่วยบริการ"]), hide_index=True, width="stretch")
+    st.caption(DEVELOPER_CREDIT)
     st.stop()
 
 
@@ -175,7 +181,7 @@ def load_group(uploads, group, demo=False):
     return parsed, errors, duplicates
 
 
-def mapped_group(parsed_sheets, group, directory, demo):
+def mapped_group(parsed_sheets, group, directory, demo, scope=None):
     frames, audits, warnings = [], [], []
     label = "งบพึงรับ" if group == "budget" else "STM"
     for parsed in parsed_sheets:
@@ -190,7 +196,9 @@ def mapped_group(parsed_sheets, group, directory, demo):
             st.caption(f"หัวตารางแถว {parsed.header_row} · {len(df):,} รายการ")
             options = ["— เลือกคอลัมน์ —"] + columns
             facility = st.selectbox("คอลัมน์รหัส รพ.สต.", options,
-                                    index=options.index(auto_facility) if auto_facility else 0, key=key + "_code", disabled=demo)
+                                    index=options.index(auto_facility) if auto_facility else 0, key=key + "_code", disabled=demo or bool(scope))
+            if scope:
+                facility = auto_facility
             amount = st.selectbox("คอลัมน์ยอดเงิน (บาท)", options,
                                   index=options.index(auto_amount) if auto_amount else 0, key=key + "_amount", disabled=demo)
             optional = ["— ไม่ใช้ —"] + columns
@@ -203,6 +211,13 @@ def mapped_group(parsed_sheets, group, directory, demo):
             continue
         records, audit = prepare_records(parsed, facility, amount, name if name in columns else None,
                                          period if period in columns else None, manual_period, directory)
+        if scope:
+            records = restrict_to_facility(records, scope)
+            # Import diagnostics exported to the user concern their unit only.
+            audit["รายการ"] = len(records)
+            audit["รหัสไม่ถูกต้อง"] = int(records["_facility"].eq("").sum())
+            audit["ยอดเงินว่าง/ไม่ถูกต้อง"] = int(records["_cents"].isna().sum())
+            audit["ไม่มีงวด"] = int(records["_period"].eq("ยังไม่ระบุงวด").sum())
         frames.append(records)
         audits.append({"ประเภท": label, **audit})
         warnings.extend(f"{parsed.filename} / {parsed.sheet}: {w}" for w in parsed.warnings)
@@ -344,10 +359,16 @@ def comparison_tab(budget, stm):
 
 def main():
     user, demo = authenticate()
+    scope = None if demo else account_code(st.session_state.user)
+    if not demo and scope is None:
+        clear_session()
+        st.rerun()
     with st.sidebar:
         st.markdown("### 🏥 SAWAN")
         st.caption("ศูนย์ตรวจสอบงบเครือข่าย")
         st.caption(html.escape(user))
+        if scope:
+            st.success(f"หน่วยบริการ {scope}")
         if st.button("กลับหน้าล็อกอิน" if demo else "ออกจากระบบ", width="stretch"):
             clear_session()
             st.rerun()
@@ -367,12 +388,12 @@ def main():
         remove_duplicates = st.checkbox("ตัดรายการเหมือนกันระหว่างไฟล์/ชีต", value=True,
                                         help="รักษารายการซ้ำภายในชีตเดิมและรายการแก้ไขที่มียอดต่างกัน")
         with st.expander("ทะเบียนชื่อหน่วยบริการ"):
-            st.caption("เพิ่มรหัสและชื่อเพื่อค้นหาด้วยชื่อ หากไฟล์มีเฉพาะรหัส")
-            directory_frame = st.data_editor(pd.DataFrame(DEFAULT_DIRECTORY.items(), columns=["รหัส", "ชื่อ"]),
-                                            num_rows="dynamic", hide_index=True, key="directory", disabled=demo)
-    directory = {normalize_code(row["รหัส"]): str(row["ชื่อ"]).strip()
-                 for _, row in directory_frame.iterrows() if normalize_code(row["รหัส"]) and pd.notna(row["ชื่อ"])}
+            st.caption("รายชื่อคงที่ตามรายการหน่วยบริการที่กำหนด")
+            st.dataframe(pd.DataFrame(DEFAULT_DIRECTORY.items(), columns=["รหัส", "ชื่อ"]), hide_index=True, width="stretch")
+    directory = DEFAULT_DIRECTORY
     hero()
+    if scope:
+        st.caption(f"กำลังตรวจสอบข้อมูล {scope} · {directory[scope]} · แสดงและส่งออกเฉพาะหน่วยบริการของบัญชี")
     if demo:
         st.warning("โหมดตัวอย่าง · ข้อมูลทั้งหมดเป็นข้อมูลสมมติ · ไม่เปิดให้อัปโหลดข้อมูลจริง")
         if "demo_workbooks" not in st.session_state:
@@ -387,7 +408,7 @@ def main():
     with st.spinner("ตรวจหัวตารางและเตรียมข้อมูล…"):
         for group, uploads in (("budget", budget_files), ("stm", stm_files)):
             sheets, errors, duplicate_files = load_group(uploads, group, demo)
-            frames, group_audits, warnings = mapped_group(sheets, group, directory, demo)
+            frames, group_audits, warnings = mapped_group(sheets, group, directory, demo, scope)
             datasets[group], duplicate_rows = combine_records(frames, remove_duplicates)
             audits.extend(group_audits)
             failures.extend(errors)
@@ -414,7 +435,8 @@ def main():
             st.divider()
             st.subheader("ตัวกรองร่วมทั้ง 3 แท็บ")
             query = st.text_input("ค้นหารหัสหรือชื่อหน่วยบริการ", placeholder="05542 / 5542 / คำสะอาด", key="search")
-            facilities = st.multiselect("หน่วยบริการ", sorted(lookup), format_func=lambda c: f"{c} · {lookup[c]}", key="facility_filter")
+            facilities = st.multiselect("หน่วยบริการ", sorted(lookup), default=[scope] if scope in lookup else [],
+                                        disabled=bool(scope), format_func=lambda c: f"{c} · {lookup[c]}", key="facility_filter")
             periods = st.multiselect("งวดข้อมูล / REP", sorted(all_records["_period"].unique()), key="period_filter")
         datasets = {g: filter_records(df, query, facilities, periods) for g, df in datasets.items()}
         missing_period = sum(int(df["_period"].eq("ยังไม่ระบุงวด").sum()) for df in datasets.values() if not df.empty)
@@ -435,6 +457,7 @@ def main():
     with tabs[2]:
         comparison_tab(datasets["budget"], datasets["stm"])
     st.caption("SAWAN · สรุปจากไฟล์ที่อัปโหลดและตัวกรองปัจจุบัน · ยอดเงินหน่วยบาท · ใช้เพื่อประกอบการตรวจสอบ")
+    st.caption(DEVELOPER_CREDIT)
 
 
 if __name__ == "__main__":

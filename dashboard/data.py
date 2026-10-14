@@ -9,6 +9,7 @@ import unicodedata
 
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
+from dashboard.registry import FACILITIES
 
 
 STM_COLUMNS = [
@@ -32,7 +33,7 @@ NAME_COLUMNS = ["ชื่อหน่วยบริการ", "ชื่อ �
 BUDGET_AMOUNTS = ["งบพึงรับ", "ยอดพึงรับ", "จำนวนเงิน", "ยอดชดเชยทั้งสิ้น"]
 STM_AMOUNTS = ["ยอดชดเชยทั้งสิ้น", "จำนวนเงิน"]
 PERIOD_COLUMNS = ["งวด", "เดือน", "REP"]
-DEFAULT_DIRECTORY = {"11450": "รพร.สว่างแดนดิน", "05542": "รพ.สต.คำสะอาด"}
+DEFAULT_DIRECTORY = FACILITIES
 CATEGORY_COLUMNS = [
     "จ่ายชดเชยหลังหัก พรบ.และเงินเดือน", "OP", "ยอดชดเชยที่คำนวณได้", "ยอดชดเชยที่จ่ายจริง",
     "HC", "DRUG", "AE", "DRUG__2", "INST", "ยอดชดเชยที่คำนวณได้__2",
@@ -221,6 +222,21 @@ def read_workbook(content: bytes, filename: str, override: int | None = None) ->
 
 def first_column(frame: pd.DataFrame, candidates: list[str]) -> str | None:
     return next((c for c in candidates if c in frame.columns), None)
+
+
+def restrict_to_facility(frame: pd.DataFrame, code: str) -> pd.DataFrame:
+    """Authorize from source HSUB/HCODE, never from an editable UI filter."""
+    if frame.empty:
+        return frame.copy()
+    column = first_column(frame, ["HSUB", "HCODE"])
+    if code not in FACILITIES or column is None:
+        return frame.iloc[:0].copy()
+    scoped = frame.loc[frame[column].map(normalize_code).eq(code)].copy()
+    if "_facility" in scoped:
+        scoped["_facility"] = code
+    if "_facility_name" in scoped:
+        scoped["_facility_name"] = FACILITIES[code]
+    return scoped
 
 
 def prepare_records(parsed: ParsedSheet, facility: str, amount: str,
