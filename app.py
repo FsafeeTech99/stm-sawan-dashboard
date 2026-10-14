@@ -15,6 +15,7 @@ from dashboard import breakdown as bd
 from dashboard import jhcis as jc
 from dashboard import local_jhcis as lj
 from dashboard import clinical_input as ci
+from dashboard import focus_ui as fu
 import hashlib
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,
@@ -25,11 +26,11 @@ from dashboard.data import (
 st.set_page_config(page_title="KhamTechReCheck • งบพึงรับ & STM", page_icon="🏥", layout="wide")
 st.markdown("""
 <style>
- .stApp {background:#f5f8fa;color:#163946;}
- [data-testid="stSidebar"] {background:#edf3f5; border-right:1px solid #dce7eb;}
+ .stApp {background:linear-gradient(180deg,#edf5f8 0,#f7f9fc 420px);color:#163946;}
+ [data-testid="stSidebar"] {background:#f0f5f8; border-right:1px solid #dce7eb;}
  .block-container {padding-top:2rem;padding-bottom:3rem;max-width:1550px;}
- .hero {background:linear-gradient(115deg,#123f4c,#176e74);padding:28px 32px;
-   border-radius:20px;margin-bottom:24px;color:white;}
+ .hero {background:radial-gradient(ellipse at 90% 0%,#167e85 0,transparent 65%),linear-gradient(115deg,#102f49,#104c60);padding:32px 36px;
+   border-radius:24px;margin-bottom:24px;color:white;box-shadow:0 14px 32px #103f4c19;border:1px solid #ffffff25;}
  .hero h1 {font-size:clamp(2rem,4.2vw,3.1rem);font-weight:800;color:white;margin:6px 0 18px;line-height:1.2;letter-spacing:-.025em;}
  .hero p {color:#d2e8ea;margin:0;font-size:.94rem;}
  .eyebrow {font-size:.75rem;letter-spacing:.14em;color:#8ce4cd;font-weight:700;}
@@ -39,6 +40,30 @@ st.markdown("""
  .step {background:white;padding:20px;border:1px solid #dce7eb;border-radius:15px;height:155px;}
  .step strong {color:#166a70;font-size:1rem;} .step p {font-size:.92rem;margin-top:12px;}
  .stButton button, .stDownloadButton button {border-radius:10px;}
+ .stButton button:hover,.stDownloadButton button:hover {transform:translateY(-1px);box-shadow:0 5px 16px #103f4c12;}
+ [data-testid="stTabs"] [role="tablist"] {gap:8px;padding:6px;background:#e8eff4;border-radius:14px;margin-bottom:22px;}
+ [data-testid="stTabs"] [role="tab"] {border-radius:10px;padding:10px 18px;height:auto;}
+ [data-testid="stTabs"] [aria-selected="true"] {background:#fff;color:#12676c;box-shadow:0 2px 6px #103f4c12;}
+ .section-kicker {font-size:.72rem;letter-spacing:.14em;font-weight:800;color:#52758a;margin:18px 0 10px;}
+ .money-grid {display:grid;grid-template-columns:1.35fr repeat(4,1fr);gap:12px;margin:16px 0;}
+ .money-card {background:#fff;border:1px solid #e1e9ee;border-top:4px solid var(--accent);border-radius:16px;padding:19px 17px;box-shadow:0 5px 16px #123f4c06;transition:transform .15s;}
+ .money-card:hover {transform:translateY(-3px);}
+ .money-card span {display:block;font-weight:750;font-size:.96rem;color:var(--accent);}
+ .money-card strong {display:block;font-size:clamp(1.25rem,2vw,2rem);font-weight:800;color:#153b4e;letter-spacing:-.04em;margin:9px 0;}
+ .money-card small {display:block;font-size:.72rem;color:#5b7081;min-height:30px;}
+ .money-card em {display:block;font-style:normal;font-size:.7rem;color:#65798a;margin-top:9px;}
+ .money-card.navy {--accent:#123f5b;background:#123f5b;}
+ .money-card.navy span,.money-card.navy strong {color:white;}
+ .money-card.navy small,.money-card.navy em {color:#bfdbed;}
+ .teal {--accent:#0891b2;} .green {--accent:#059669;} .purple {--accent:#7c3aed;} .amber {--accent:#d97706;}
+ .followup-banner {background:#fff8eb;border:1px solid #f0dcb6;border-left:5px solid #d97706;border-radius:14px;padding:18px 22px;margin:18px 0 10px;}
+ .followup-banner b {display:block;color:#8c4e14;margin-bottom:8px;}
+ .followup-banner span {font-size:.94rem;color:#75562e;} .followup-banner strong {font-size:1.15rem;}
+ [data-testid="stDataFrame"] {border-radius:12px;overflow:hidden;}
+ [data-testid="stForm"] {border-color:#dce7eb;border-radius:16px;background:#ffffff80;}
+ @media(max-width:1000px) {.money-grid {grid-template-columns:repeat(2,minmax(0,1fr));}.money-card.navy{grid-column:1/-1;}}
+ @media(max-width:550px) {.hero {padding:22px;}.money-card{padding:14px;}.block-container{padding-left:1rem;padding-right:1rem;}}
+ @media(prefers-reduced-motion:reduce) {.money-card,.stButton button,.stDownloadButton button{transition:none;transform:none!important;}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -46,7 +71,7 @@ st.markdown("""
 def hero():
     st.markdown("""<div class="hero"><div class="eyebrow">เครือข่ายบริการสุขภาพ อ.สว่างแดนดิน</div>
     <h1>KhamTechReCheck</h1>
-    <p>ตรวจสอบงบพึงรับ & Statement สปสช. • วิเคราะห์บริการและยอด Walk-in</p>
+    <p>ตรวจยอดชดเชยให้ชัด • HC & สมุนไพร · PP · FS · Walk-in</p>
     <p>เครือข่ายบริการสุขภาพ อ.สว่างแดนดิน · รพร.สว่างแดนดิน 11450 · รพ.สต. สังกัด อบจ.สกลนคร</p></div>""", unsafe_allow_html=True)
 
 
@@ -273,6 +298,7 @@ def dataset_tab(frame, group, audits, uploaded_count):
     cols[1].metric("หน่วยบริการ", f"{summary['รหัสหน่วยบริการ'].nunique():,}")
     cols[2].metric("รายการที่รวมยอด", f"{int(frame['_valid'].sum()):,}")
     cols[3].metric("ไฟล์ในผลกรอง", f"{frame['_source_file'].nunique():,} / {uploaded_count}")
+    fu.brief(frame, group)
     claim_like = "TRAN_ID" in frame or "ยอดชดเชยทั้งสิ้น" in frame
     components = None
     if claim_like:
@@ -575,8 +601,14 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
         if frame.empty:
             st.info("ไม่พบ PROJCODE ที่ระบุ Walk-in ในผลกรองนี้ ระบบไม่ถือ OP ทั้งหมดเป็น Walk-in")
             return
-    else:
-        st.subheader("เจาะยอด • แต่ละราคาคือบริการอะไร")
+    fu.workspace(frame, labels[selected], prefix, download)
+    # Use the same explicit/per-file mapping in price drill-down and Walk-in.
+    resolved = fu.prepared(frame, labels[selected])
+    frame = frame.copy()
+    frame["HC-DRUG"] = pd.Series(pd.NA, index=frame.index, dtype="Float64")
+    own_rows = frame["_facility"].fillna("").ne("")
+    frame.loc[own_rows, "HC-DRUG"] = pd.array(resolved["HC-DRUG"], dtype="Float64") / 100
+    st.subheader("วิเคราะห์ราคาและหลักฐานประกอบบริการ")
     st.info("ชื่อบริการเป็นการประมาณการจากหมวดและยอดเงิน โดยอ้างอิงภาพราคาปี 2570 ที่ผู้ใช้ให้ ไม่ได้ยืนยันจากรหัสบริการ อายุ หรือสิทธิการรักษา ยอดเงินต้นทางยังคงเดิม")
     overview = st.columns(5)
     overview[0].metric("ยอดรวมจากไฟล์ • " + ("Walk-in" if only_walkin else "ผลกรองนี้"), f"{amount_total(frame):,.2f}", "บาท", delta_color="off")
@@ -586,14 +618,14 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
         column.metric(label, "ข้อมูลไม่ครบ" if total is None else f"{total:,.2f}", "บาท", delta_color="off")
         column.button(f"ดูรายการ {label}", key=prefix + "_open_" + label,
                       on_click=choose_category, args=(label, category_key), width="stretch")
-    st.caption("PP / FS / Drug / HC เป็นยอดแต่ละคอลัมน์ ไม่เอามาบวกแทนยอดชดเชยทั้งสิ้น เพราะรายงานอาจมียอดย่อยซ้อนกัน จำนวนรายการเป็นแถวใน STM ไม่ใช่จำนวนครั้งบริการที่ยืนยันแล้ว")
+    st.caption("PP / FS / HC-DRUG / HC เป็นยอดแต่ละคอลัมน์ ไม่เอามาบวกแทนยอดชดเชยทั้งสิ้น เพราะรายงานอาจมียอดย่อยซ้อนกัน จำนวนรายการเป็นแถวใน STM ไม่ใช่จำนวนครั้งบริการที่ยืนยันแล้ว")
     show_names = st.checkbox("แสดงชื่อผู้รับบริการในตารางเจาะรายการ", key=prefix + "_names", value=False)
     if only_walkin:
         table = bd.walkin_table(frame, rules, show_names)
         clinical = clinical_details(bd.valid_rows(frame), evidence)
         if clinical is not None:
             table = pd.concat([table, clinical], axis=1)
-        st.write(f"**Walk-in {len(table):,} รายการ** • แยก PP, FS, Drug และ HC ต่อรายการ")
+        st.write(f"**Walk-in {len(table):,} รายการ** • แยก PP, FS, HC-DRUG และ HC ต่อรายการ")
         st.dataframe(table, hide_index=True, width="stretch")
         download("Export รายการ Walk-in และยอดทั้ง 4 หมวด", {"Walk-in รายรายการ": table},
                  "KhamTechReCheck_walkin.xlsx", prefix + "_walkin_export")
@@ -687,6 +719,7 @@ def main():
                                       key="stm_files", disabled=demo, help="รองรับ STM ทั้ง 25 ไฟล์ และทุกชีตที่มีตาราง")
         st.caption("แต่ละคนอัปโหลดและกรองของตนเอง ข้อมูลแยกตามเซสชัน ไม่บันทึกไฟล์ผู้ป่วยลงดิสก์")
         evidence = clinical_sidebar(scope, demo)
+        fu.mapping_controls()
         remove_duplicates = st.checkbox("ตัดรายการเหมือนกันระหว่างไฟล์/ชีต", value=True,
                                         help="รักษารายการซ้ำภายในชีตเดิมและรายการแก้ไขที่มียอดต่างกัน")
         with st.expander("ทะเบียนชื่อหน่วยบริการ"):
@@ -769,6 +802,7 @@ def main():
         dataset_tab(datasets["stm"], "stm", [a for a in audits if a["ประเภท"] == "STM"], len(stm_files))
     with tabs[2]:
         comparison_tab(datasets["budget"], datasets["stm"])
+        fu.category_comparison(datasets["budget"], datasets["stm"], download)
     with tabs[3]:
         service_tab(datasets, rules, "service", evidence=evidence)
     with tabs[4]:

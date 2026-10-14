@@ -52,6 +52,8 @@ def token(value) -> str:
 
 
 ALIASES = {
+    "HC-DRUG": ["HC-DRUG", "HC Drug", "HC_DRUG", "ยาสมุนไพร"],
+    "บริการ": ["บริการ", "ชื่อบริการ", "รายการบริการ"],
     "HSUB": ["hsub", "รหัสหน่วยบริการประจำ", "รหัส รพ.สต.", "รหัสรพสต", "hsubcode"],
     "HCODE": ["hcode", "รหัสหน่วยบริการ", "รหัสสถานพยาบาล", "รหัสโรงพยาบาล"],
     "HCODE_PAID": ["hcodepaid", "รหัสหน่วยบริการที่รับเงิน"],
@@ -243,6 +245,7 @@ def prepare_records(parsed: ParsedSheet, facility: str, amount: str,
                     name: str | None = None, period_column: str | None = None,
                     period_override: str = "", directory=None) -> tuple[pd.DataFrame, dict]:
     frame = parsed.frame.copy()
+    frame["_source_columns"] = "|" + "|".join(parsed.frame.columns) + "|"
     directory = directory or DEFAULT_DIRECTORY
     frame["_facility"] = frame[facility].map(normalize_code)
     frame["_cents"] = pd.array(frame[amount].map(money), dtype="Int64")
@@ -372,7 +375,8 @@ def reconcile(budget: pd.DataFrame, stm: pd.DataFrame) -> pd.DataFrame:
 def details(frame: pd.DataFrame, group: str) -> pd.DataFrame:
     if group == "stm" or (group == "budget" and ("TRAN_ID" in frame or "ยอดชดเชยทั้งสิ้น" in frame)):
         # Full requested schema in the specified order, including absent columns.
-        result = frame.reindex(columns=STM_COLUMNS).copy()
+        extra = [c for c in ["HC-DRUG", "บริการ"] if c in frame]
+        result = frame.reindex(columns=STM_COLUMNS + extra).copy()
         numeric = [c for c in STM_COLUMNS if c not in IDENTIFIERS + CODE_COLUMNS + [
             "ลำดับที่", "ชื่อ-นามสกุล", "วันเข้ารักษา", "วันจำหน่าย", "HTYPE_HCODE", "PROV_HCODE",
             "HTYPE_HCODE_PAID", "PROV_HCODE_PAID"]]

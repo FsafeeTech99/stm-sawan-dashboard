@@ -5,9 +5,10 @@ import re
 import pandas as pd
 from dashboard.data import clean_text, money
 
-FOCUS = {"PP": "PP", "FS": "FS", "Drug": "DRUG", "HC": "HC"}
-CATEGORIES = {**FOCUS, "Drug (2)": "DRUG__2", "OP": "OP", "AE": "AE", "INST": "INST"}
+FOCUS = {"PP": "PP", "FS": "FS", "HC-DRUG": "HC-DRUG", "HC": "HC"}
+CATEGORIES = {**FOCUS, "Drug": "DRUG", "Drug (2)": "DRUG__2", "OP": "OP", "AE": "AE", "INST": "INST"}
 CATEGORY_NAMES = {"PP": "ส่งเสริมสุขภาพและป้องกันโรค", "FS": "บริการในคอลัมน์ FS",
+                  "HC-DRUG": "สมุนไพร • ตามหัวตารางหรือคอลัมน์ที่ผู้ใช้เลือก",
                   "Drug": "ค่ายา DRUG ตำแหน่งแรก", "HC": "ยาสมุนไพร (ชื่อหมวดตามผู้ใช้)",
                   "Drug (2)": "ค่ายา DRUG ตำแหน่งที่สอง", "OP": "บริการผู้ป่วยนอก",
                   "AE": "บริการในคอลัมน์ AE", "INST": "บริการในคอลัมน์ INST"}
@@ -94,7 +95,7 @@ def estimate_service(label, cents, rules):
         return candidates.iloc[0]["บริการที่อาจตรง"], "ประมาณการจากหมวด + ราคา", possible
     if len(candidates) > 1:
         return "หลายบริการที่เป็นไปได้", "ราคาเดียวกันหลายบริการ", possible
-    if label == "HC":
+    if label in {"HC", "HC-DRUG"}:
         return "ยาสมุนไพร", "ชื่อหมวดตามผู้ใช้ • ยังไม่ระบุรายการยา", ""
     return "ยังจับคู่บริการไม่ได้", "ไม่มีราคาอ้างอิงตรง", ""
 
