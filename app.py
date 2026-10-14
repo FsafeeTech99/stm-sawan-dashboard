@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import importlib
 import os
 import time
 from io import BytesIO
@@ -16,6 +17,13 @@ from dashboard import jhcis as jc
 from dashboard import local_jhcis as lj
 from dashboard import clinical_input as ci
 from dashboard import focus_ui as fu
+from dashboard import data as data_module
+# Streamlit may rerun app.py while imported modules from the prior release
+# remain cached. Refresh these changed schemas once, before importing functions.
+if not hasattr(data_module, "FOCUS_SCHEMA_VERSION"):
+    importlib.reload(data_module)
+if "HC-DRUG" not in bd.FOCUS:
+    importlib.reload(bd)
 import hashlib
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,

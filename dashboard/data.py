@@ -11,6 +11,8 @@ import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 from dashboard.registry import FACILITIES
 
+FOCUS_SCHEMA_VERSION = 1
+
 
 STM_COLUMNS = [
     "REP", "ลำดับที่", "TRAN_ID", "HN", "AN", "PID", "ชื่อ-นามสกุล",
