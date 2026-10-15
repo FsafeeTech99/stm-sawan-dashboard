@@ -6,12 +6,14 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 from dashboard import focus as fc
+from dashboard import services as sv
+SERVICE_REVIEW_VERSION = 1
 from dashboard.data import clean_text
 
 
 def cards(rows):
     colours = ["navy", "teal", "green", "purple", "amber"]
-    subtitles = ["ยอดรวมต้นทาง", "หมวด HC", "สมุนไพร • คอลัมน์ที่เลือก", "ส่งเสริมสุขภาพ / ป้องกันโรค", "หมวด FS"]
+    subtitles = ["ยอดรวมต้นทาง", "ยาทั่วไป", "สมุนไพร", "ส่งเสริมสุขภาพ / ป้องกันโรค", "วางแผนครอบครัว"]
     blocks = []
     for col, colour, sub in zip([fc.TOTAL] + fc.GROUPS, colours, subtitles):
         info = fc.total_info(rows, col)
@@ -76,6 +78,16 @@ def workspace(frame, source, prefix, download):
     service = c.selectbox("ชื่อบริการ", choices, key=service_key)
     status = d.selectbox("สถานะที่ต้องการดู", ["ทั้งหมด", "ต้องติดตาม", "ยังไม่ระบุบริการ", "ยอดรวมว่าง/อ่านไม่ได้"], key=prefix + "_focus_status")
     rows = fc.filter_rows(all_rows, categories, query, service, status)
+    groups = sorted(all_rows.apply(sv.service_group, axis=1).unique())
+    chosen_groups = st.multiselect("รวมและกรองกลุ่มบริการ", groups, key=prefix + "_service_groups",
+                                  placeholder="เลือกสมุนไพร เพื่อรวมชื่อยาทุกชนิดในกลุ่มเดียว")
+    if chosen_groups:
+        rows = rows.loc[rows.apply(sv.service_group, axis=1).isin(chosen_groups)].copy()
+    prices = sorted(int(v) for v in rows[fc.TOTAL].dropna().unique())
+    chosen_prices = st.multiselect("ยอดชดเชยทั้งสิ้นต่อรายการ", prices,
+                                  format_func=lambda n: f"{n / 100:,.2f} บาท", key=prefix + "_service_prices")
+    if chosen_prices:
+        rows = rows.loc[rows[fc.TOTAL].isin(chosen_prices)].copy()
     st.caption(f"ผลกรอง {len(rows):,} / {len(all_rows):,} รายการ • เลือกหลายหมวดใช้เงื่อนไขมียอดอย่างน้อยหนึ่งหมวด • ยอดด้านล่างเปลี่ยนตามตัวกรองชุดนี้")
     cards(rows)
     st.caption("ตัวเลขที่มีรายการไม่ทราบยอดเป็นผลรวมเฉพาะส่วนที่อ่านได้ หมวดเงินอาจซ้อนกัน จึงไม่บวกแทนยอดชดเชยทั้งสิ้น")
@@ -106,6 +118,16 @@ def workspace(frame, source, prefix, download):
         lines += [f'ยอดตามสมุนไพรที่กรอกเอง: {amounts[fc.EDIT_COLUMNS[2]]:,.2f} บาท',
                   f'ยอดตาม PP ที่กรอกเอง: {amounts[fc.EDIT_COLUMNS[3]]:,.2f} บาท']
         st.code("\n".join(lines), language=None)
+    by_service = sv.summarize_services(rows)
+    by_price = sv.summarize_services(rows, by_price=True)
+    st.subheader("บริการที่ตรวจจริง • จำนวนรายการและยอดชดเชย")
+    st.caption("ยึดชื่อบริการจากไฟล์หรือชื่อที่คุณตรวจเอง ไม่เดาจากราคา • จำนวนรายการไม่ใช่จำนวนคน • HC = ยาทั่วไป / HC-DRUG = สมุนไพร / PP = ส่งเสริมป้องกัน / FS = วางแผนครอบครัว ตามนิยามที่กำหนด")
+    st.dataframe(by_service, hide_index=True, width="stretch")
+    with st.expander("แยกยอดต่อรายการ เช่น FIT test 30 บาท × จำนวนรายการ", expanded=True):
+        st.dataframe(by_price, hide_index=True, width="stretch")
+    herb = fc.total_info(rows, "HC-DRUG")
+    st.info(f"รวมสมุนไพรตามคอลัมน์ HC-DRUG: {herb['cents'] / 100:,.2f} บาท จาก {herb['count']:,} รายการที่มียอด • ไม่ทราบยอด {herb['missing']:,} รายการ")
+    st.caption("รายการสมุนไพรร่วมหมวดอื่นแยกไว้ให้ตรวจสอบ ยอดสมุนไพรนับเฉพาะ HC-DRUG ไม่ดึง OP / PP / FS / HC มารวม • ยอดติดลบคงไว้ในการรวมสุทธิ • ค่าว่างหมายถึงข้อมูลไม่ครบ")
     show_names = st.checkbox("แสดงชื่อในตารางและไฟล์ส่งออกชุดนี้", key=prefix + "_focus_names")
     table = fc.export_rows(rows, show_names)
     st.markdown("**รายละเอียดและบันทึกติดตาม**")
@@ -138,18 +160,7 @@ def workspace(frame, source, prefix, download):
         st.session_state[notes_key] = notes
         st.session_state["focus_revision"] = st.session_state.get("focus_revision", 0) + 1
         st.rerun()
-    service_summary = []
-    for name, group in rows.groupby("บริการ", sort=True):
-        item = {"บริการ": name, "จำนวนรายการ": len(group)}
-        for col in fc.GROUPS + [fc.TOTAL]:
-            info = fc.total_info(group, col)
-            item[col] = info["cents"] / 100 if not info["missing"] else None
-        service_summary.append(item)
-    by_service = pd.DataFrame(service_summary)
-    with st.expander("สรุปยอดแยกชื่อบริการ", expanded=False):
-        st.dataframe(by_service, hide_index=True, width="stretch")
-        st.caption("ค่าว่างหมายถึงข้อมูลหมวดนั้นไม่ครบในบริการนี้")
     download("Export สรุปและรายการตามตัวกรอง", {"สรุปยอด": totals, "สรุปรายบริการ": by_service,
-             "รายละเอียด": table, "รายการติดตาม": table.loc[table["ต้องติดตาม"]]},
+             "บริการแยกราคา": by_price, "รายละเอียด": table, "รายการติดตาม": table.loc[table["ต้องติดตาม"]]},
              "KhamTechReCheck_service_review.xlsx", prefix + "_focus_export")
     st.divider()

@@ -22,8 +22,12 @@ from dashboard import data as data_module
 # remain cached. Refresh these changed schemas once, before importing functions.
 if getattr(data_module, "FOCUS_SCHEMA_VERSION", 0) < 2:
     importlib.reload(data_module)
-if "HC-DRUG" not in bd.FOCUS:
+if getattr(bd, "SERVICE_REVIEW_VERSION", 0) < 1:
     importlib.reload(bd)
+if getattr(fu.fc, "SERVICE_REVIEW_VERSION", 0) < 1:
+    importlib.reload(fu.fc)
+if getattr(fu, "SERVICE_REVIEW_VERSION", 0) < 1:
+    importlib.reload(fu)
 import hashlib
 from dashboard.data import (
     BUDGET_AMOUNTS, CATEGORY_COLUMNS, DISPLAY_NAMES, DEFAULT_DIRECTORY, NAME_COLUMNS, PERIOD_COLUMNS,
@@ -692,6 +696,12 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
         st.dataframe(table, hide_index=True, width="stretch")
         download("Export รายการ Walk-in และยอดทั้ง 4 หมวด", {"Walk-in รายรายการ": table},
                  "KhamTechReCheck_walkin.xlsx", prefix + "_walkin_export")
+    if "บริการ" in frame:
+        frame = frame.loc[frame["บริการ"].map(clean_text).eq("")].copy()
+        if frame.empty:
+            st.info("ทุกรายการมีชื่อบริการจากไฟล์แล้ว ดูสรุปบริการที่ตรวจจริงด้านบน จึงไม่ต้องประมาณการชื่อจากราคา")
+            return
+    st.subheader("ประมาณการเฉพาะรายการที่ยังไม่มีชื่อบริการจากไฟล์")
     label = st.radio("คลิกเลือกหมวดบริการ", list(bd.CATEGORIES), key=category_key, horizontal=True)
     st.caption(f"{label} • {bd.CATEGORY_NAMES[label]}")
     summary = bd.amount_summary(frame, label, rules)
@@ -743,7 +753,7 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
             with st.expander("เหตุผลที่จับคู่ราคา • บริการและรหัสอ้างอิงที่เป็นไปได้", expanded=True):
                 st.dataframe(matches, hide_index=True, width="stretch")
         else:
-            st.caption("ไม่พบราคาตรงในภาพอ้างอิง หมวด HC ใช้ชื่อยาสมุนไพรตามผู้ใช้ หรือเพิ่มกฎประมาณการใน sidebar ได้")
+            st.caption("ไม่พบราคาตรงในภาพอ้างอิง HC คือยาทั่วไป และ HC-DRUG คือสมุนไพรตามนิยามผู้ใช้ หรือเพิ่มกฎประมาณการใน sidebar ได้")
     export_tables = {"สรุปราคาหมวดที่เลือก": summary, "รายละเอียดที่เลือก": detail,
              "กฎชื่อประมาณการ": pd.DataFrame([[g, c / 100, name] for (g, c), name in rules.items()],
                                       columns=bd.DEFAULT_RULES.columns), "อัตราอ้างอิงจากภาพ": bd.RATE_DF}

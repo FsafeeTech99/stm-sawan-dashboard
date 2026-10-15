@@ -6,6 +6,7 @@ import json
 import pandas as pd
 from dashboard.data import clean_text, money
 
+SERVICE_REVIEW_VERSION = 1
 GROUPS = ["HC", "HC-DRUG", "PP", "FS"]
 TOTAL = "ยอดชดเชยทั้งสิ้น"
 EDIT_COLUMNS = ["บริการที่ตรวจเอง", "ต้องติดตาม", "ยอดตามสมุนไพร (กรอกเอง)", "ยอดตาม PP (กรอกเอง)", "บันทึกติดตาม"]
@@ -48,7 +49,7 @@ def review_rows(frame, annotations=None, drug_column="DRUG", empty_zero=True):
                "PROJCODE": row.get("PROJCODE"), "บริการจากไฟล์": clean_text(row.get("บริการ")),
                "คอลัมน์ HC-DRUG": drug if drug and available(row, drug) else "ไม่มีคอลัมน์",
                "ไฟล์": row.get("_source_file"), "ชีต": row.get("_source_sheet"), "แถวต้นทาง": row.get("_source_row")}
-        for group in GROUPS:
+        for group in GROUPS + ["OP"]:
             rec[group] = component(row, drug if group == "HC-DRUG" else group, empty_zero)
         # A blank total is unknown even if component blanks are treated as zero.
         rec[TOTAL] = money(row.get(TOTAL)) if available(row, TOTAL) else row.get("_cents")
@@ -62,7 +63,7 @@ def review_rows(frame, annotations=None, drug_column="DRUG", empty_zero=True):
         rec["ที่มาชื่อบริการ"] = "ผู้ใช้ตรวจเอง" if rec["บริการที่ตรวจเอง"] else "จากไฟล์" if rec["บริการจากไฟล์"] else "ยังไม่ระบุ"
         records.append(rec)
     result = pd.DataFrame(records)
-    for col in GROUPS + [TOTAL, "เรียกเก็บ"]:
+    for col in GROUPS + ["OP", TOTAL, "เรียกเก็บ"]:
         result[col] = pd.array(result[col] if col in result else [], dtype="Int64")
     return result
 
@@ -106,7 +107,7 @@ def filter_rows(rows, categories=(), query="", service="ทั้งหมด", 
 
 def export_rows(rows, show_names=True):
     output = rows.drop(columns=["_key", "PID"] + ([] if show_names else ["ชื่อ-นามสกุล"]), errors="ignore").copy()
-    for col in GROUPS + [TOTAL, "เรียกเก็บ"]:
+    for col in GROUPS + ["OP", TOTAL, "เรียกเก็บ"]:
         output[col] = output[col].astype("Float64") / 100
     order = ["รหัสหน่วยบริการ", "งวด / REP", "TRAN_ID", "HN", "ชื่อ-นามสกุล", "วันเข้ารักษา",
              "เรียกเก็บ", *GROUPS, TOTAL, "บริการ", "บริการจากไฟล์", "ที่มาชื่อบริการ", *EDIT_COLUMNS]

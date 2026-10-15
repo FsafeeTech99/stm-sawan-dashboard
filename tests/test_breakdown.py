@@ -34,7 +34,7 @@ class BreakdownTests(unittest.TestCase):
         self.assertIn("ANC", bd.estimate_service("PP", 36000, rules)[0])
         self.assertIn("ยาคุม", bd.estimate_service("FS", 8000, rules)[0])
         self.assertEqual(bd.estimate_service("FS", 4900, rules)[0], "ยังจับคู่บริการไม่ได้")
-        self.assertEqual(bd.estimate_service("HC", 12345, rules)[0], "ยาสมุนไพร")
+        self.assertEqual(bd.estimate_service("HC", 12345, rules)[0], "ยาทั่วไป")
 
     def test_ambiguous_rates_and_negative_adjustments(self):
         name, status, possible = bd.estimate_service("PP", 5000, {})

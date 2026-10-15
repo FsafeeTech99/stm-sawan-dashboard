@@ -5,11 +5,12 @@ import re
 import pandas as pd
 from dashboard.data import clean_text, money
 
+SERVICE_REVIEW_VERSION = 1
 FOCUS = {"PP": "PP", "FS": "FS", "HC-DRUG": "HC-DRUG", "HC": "HC"}
 CATEGORIES = {**FOCUS, "Drug": "DRUG", "Drug (2)": "DRUG__2", "OP": "OP", "AE": "AE", "INST": "INST"}
-CATEGORY_NAMES = {"PP": "ส่งเสริมสุขภาพและป้องกันโรค", "FS": "บริการในคอลัมน์ FS",
+CATEGORY_NAMES = {"PP": "ส่งเสริมสุขภาพและป้องกันโรค", "FS": "วางแผนครอบครัว",
                   "HC-DRUG": "สมุนไพร • ตามหัวตารางหรือคอลัมน์ที่ผู้ใช้เลือก",
-                  "Drug": "ค่ายา DRUG ตำแหน่งแรก", "HC": "ยาสมุนไพร (ชื่อหมวดตามผู้ใช้)",
+                  "Drug": "ค่ายา DRUG ตำแหน่งแรก", "HC": "ยาทั่วไป",
                   "Drug (2)": "ค่ายา DRUG ตำแหน่งที่สอง", "OP": "บริการผู้ป่วยนอก",
                   "AE": "บริการในคอลัมน์ AE", "INST": "บริการในคอลัมน์ INST"}
 # Reference: the 21-row FY2570 image supplied by the user, not a verified current tariff.
@@ -95,7 +96,9 @@ def estimate_service(label, cents, rules):
         return candidates.iloc[0]["บริการที่อาจตรง"], "ประมาณการจากหมวด + ราคา", possible
     if len(candidates) > 1:
         return "หลายบริการที่เป็นไปได้", "ราคาเดียวกันหลายบริการ", possible
-    if label in {"HC", "HC-DRUG"}:
+    if label == "HC":
+        return "ยาทั่วไป", "ชื่อหมวดตามผู้ใช้ • ยังไม่ระบุรายการยา", ""
+    if label == "HC-DRUG":
         return "ยาสมุนไพร", "ชื่อหมวดตามผู้ใช้ • ยังไม่ระบุรายการยา", ""
     return "ยังจับคู่บริการไม่ได้", "ไม่มีราคาอ้างอิงตรง", ""
 
@@ -103,6 +106,8 @@ def estimate_service(label, cents, rules):
 def amount_summary(frame, label, rules=None):
     columns = ["บริการประมาณการ", "สถานะการจับคู่", "ยอดต่อรายการ (บาท)", "จำนวนรายการ", "ยอดบวก (บาท)", "ยอดติดลบ (บาท)", "ยอดสุทธิ (บาท)", "บริการที่อาจตรง"]
     rows = valid_rows(frame)
+    if "บริการ" in rows:
+        rows = rows.loc[rows["บริการ"].map(clean_text).eq("")]
     column = CATEGORIES[label]
     if rows.empty or column not in rows:
         return pd.DataFrame(columns=columns)
@@ -146,6 +151,9 @@ def service_details(frame, label, rules=None, show_names=False):
         result["ชื่อ-นามสกุล"] = frame.get("ชื่อ-นามสกุล")
     amounts = frame.get("_category_cents", pd.Series(index=frame.index, dtype="Int64"))
     classified = [estimate_service(label, v, rules or {}) for v in amounts]
+    if "บริการ" in frame:
+        classified = [(clean_text(name), "ชื่อบริการจากไฟล์", "") if clean_text(name) else estimate
+                      for name, estimate in zip(frame["บริการ"], classified)]
     result["หมวด"] = label
     result["บริการประมาณการ"] = [v[0] for v in classified]
     result["สถานะการจับคู่"] = [v[1] for v in classified]
@@ -167,7 +175,7 @@ def walkin_table(frame, rules=None, show_names=False):
     for label, col in FOCUS.items():
         values = rows[col].map(money) if col in rows else pd.Series(None, index=rows.index)
         output[f"{label} (บาท)"] = values.map(lambda n: int(n) / 100 if pd.notna(n) else None)
-        output[f"{label} • บริการประมาณการ"] = [estimate_service(label, int(v), rules or {})[0] if pd.notna(v) and v else "" for v in values]
+        output[f"{label} • บริการจากไฟล์ / ประมาณการ"] = [(clean_text(name) or estimate_service(label, int(v), rules or {})[0]) if pd.notna(v) and v else "" for v, name in zip(values, rows.get("บริการ", pd.Series("", index=rows.index)))]
     output["ยอดชดเชยทั้งสิ้นจากไฟล์ (บาท)"] = rows["_cents"].map(lambda n: int(n) / 100)
     for col, label in [("_source_file", "ไฟล์"), ("_source_sheet", "ชีต"), ("_source_row", "แถวต้นทาง")]:
         output[label] = rows[col] if col in rows else None
