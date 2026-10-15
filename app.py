@@ -22,7 +22,7 @@ from dashboard import data as data_module
 # remain cached. Refresh these changed schemas once, before importing functions.
 if getattr(data_module, "FOCUS_SCHEMA_VERSION", 0) < 2:
     importlib.reload(data_module)
-if getattr(bd, "SERVICE_REVIEW_VERSION", 0) < 2:
+if getattr(bd, "SERVICE_REVIEW_VERSION", 0) < 3:
     importlib.reload(bd)
 if getattr(fu.fc, "SERVICE_REVIEW_VERSION", 0) < 1:
     importlib.reload(fu.fc)

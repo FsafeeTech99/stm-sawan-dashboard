@@ -5,7 +5,7 @@ import re
 import pandas as pd
 from dashboard.data import clean_text, money
 
-SERVICE_REVIEW_VERSION = 2
+SERVICE_REVIEW_VERSION = 3
 FOCUS = {"PP": "PP", "FS": "FS", "HC-DRUG": "HC-DRUG", "HC": "HC"}
 CATEGORIES = {**FOCUS, "Drug": "DRUG", "Drug (2)": "DRUG__2", "OP": "OP", "AE": "AE", "INST": "INST"}
 CATEGORY_NAMES = {"PP": "ส่งเสริมสุขภาพและป้องกันโรค", "FS": "วางแผนครอบครัว",
@@ -67,7 +67,9 @@ def walkin_summary(frame):
         return {"รายการ": 0, "คนไม่ซ้ำ": 0, "ชดเชย": 0, "ชดเชยบาท": 0.0,
                 "หักคืน": 0, "หักคืนบาท": 0.0, "ศูนย์": 0, "สุทธิบาท": 0.0,
                 "หมวด": {name: 0.0 for name in FOCUS}}
-    total = rows["_cents"].map(money)
+    # `_cents` is already integer satang; applying money() again would scale
+    # the amount by 100 and make the Walk-in card disagree with the dashboard.
+    total = rows["_cents"].astype("Int64")
     pid = rows.get("PID", pd.Series("", index=rows.index)).map(clean_text)
     valid_pid = pid.str.fullmatch(r"\d{13}")
     return {
