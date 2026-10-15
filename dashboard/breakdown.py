@@ -5,7 +5,7 @@ import re
 import pandas as pd
 from dashboard.data import clean_text, money
 
-SERVICE_REVIEW_VERSION = 1
+SERVICE_REVIEW_VERSION = 2
 FOCUS = {"PP": "PP", "FS": "FS", "HC-DRUG": "HC-DRUG", "HC": "HC"}
 CATEGORIES = {**FOCUS, "Drug": "DRUG", "Drug (2)": "DRUG__2", "OP": "OP", "AE": "AE", "INST": "INST"}
 CATEGORY_NAMES = {"PP": "ส่งเสริมสุขภาพและป้องกันโรค", "FS": "วางแผนครอบครัว",
@@ -58,6 +58,26 @@ def walkin_rows(frame):
             return False
         return bool(re.search(r"(?<![A-Z])WALK[\s_-]*IN(?![A-Z])", value))
     return frame.loc[frame["PROJCODE"].map(marked)].copy()
+
+
+def walkin_summary(frame):
+    """Reconcile Walk-in rows selected from PROJCODE, including every pay column."""
+    rows = valid_rows(walkin_rows(frame))
+    if rows.empty:
+        return {"รายการ": 0, "คนไม่ซ้ำ": 0, "ชดเชย": 0, "ชดเชยบาท": 0.0,
+                "หักคืน": 0, "หักคืนบาท": 0.0, "ศูนย์": 0, "สุทธิบาท": 0.0,
+                "หมวด": {name: 0.0 for name in FOCUS}}
+    total = rows["_cents"].map(money)
+    pid = rows.get("PID", pd.Series("", index=rows.index)).map(clean_text)
+    valid_pid = pid.str.fullmatch(r"\d{13}")
+    return {
+        "รายการ": int(len(rows)), "คนไม่ซ้ำ": int(pid.loc[valid_pid].nunique()),
+        "ชดเชย": int(total.gt(0).sum()), "ชดเชยบาท": int(total.clip(lower=0).sum()) / 100,
+        "หักคืน": int(total.lt(0).sum()), "หักคืนบาท": int(total.clip(upper=0).sum()) / 100,
+        "ศูนย์": int(total.eq(0).sum()), "สุทธิบาท": int(total.sum()) / 100,
+        "หมวด": {name: int(rows[column].map(money).fillna(0).sum()) / 100
+                  for name, column in FOCUS.items() if column in rows},
+    }
 
 
 def rate_matches(cents, label):

@@ -49,6 +49,17 @@ class ServiceSummaryTests(unittest.TestCase):
         self.assertEqual(bd.estimate_service("HC", 8734, {})[0], "ยาทั่วไป")
         self.assertEqual(bd.estimate_service("HC-DRUG", 9800, {})[0], "ยาสมุนไพร")
 
+    def test_fs_walkin_summary_uses_projcode_and_counts_statuses(self):
+        rows, _ = self.rows()
+        rows["PROJCODE"] = ["WALKIN", "WALKIN", "WALKIN", "", "", "", "WALK-IN"]
+        result = sv.walkin_status_summary(rows)
+        self.assertEqual(result["รายการ"], 4)
+        self.assertEqual(result["คนไม่ซ้ำ"], 0)
+        self.assertEqual(result["ชดเชย"], 2)
+        self.assertEqual(result["หักคืน"], 1)
+        self.assertEqual(result["ศูนย์"], 1)
+        self.assertAlmostEqual(result["สุทธิบาท"], 61.01)
+
 
 if __name__ == "__main__":
     unittest.main()

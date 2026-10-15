@@ -22,11 +22,14 @@ from dashboard import data as data_module
 # remain cached. Refresh these changed schemas once, before importing functions.
 if getattr(data_module, "FOCUS_SCHEMA_VERSION", 0) < 2:
     importlib.reload(data_module)
-if getattr(bd, "SERVICE_REVIEW_VERSION", 0) < 1:
+if getattr(bd, "SERVICE_REVIEW_VERSION", 0) < 2:
     importlib.reload(bd)
 if getattr(fu.fc, "SERVICE_REVIEW_VERSION", 0) < 1:
     importlib.reload(fu.fc)
-if getattr(fu, "SERVICE_REVIEW_VERSION", 0) < 1:
+if getattr(fu, "SERVICE_REVIEW_VERSION", 0) < 2:
+    importlib.reload(fu)
+if getattr(fu.sv, "VERSION", 0) < 2:
+    importlib.reload(fu.sv)
     importlib.reload(fu)
 import hashlib
 from dashboard.data import (
@@ -660,7 +663,7 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
         return
     if only_walkin:
         st.subheader("Walk-in • ยอดและบริการของแต่ละรายการ")
-        st.caption("คัดเฉพาะ PROJCODE ที่ระบุ WALKIN, WALK-IN หรือ WALK IN ตามที่ผู้ใช้กำหนด")
+        st.caption("FS ในไฟล์นี้เป็นกลุ่ม Walk-in: คัดจาก PROJCODE ที่ระบุ WALKIN, WALK-IN หรือ WALK IN และแสดงยอด HC / HC-DRUG / PP / FS / OP ของแถวเดียวกัน")
         if "PROJCODE" not in frame:
             st.warning("ไฟล์นี้ไม่มี PROJCODE จึงยังระบุ Walk-in ไม่ได้")
             return
@@ -668,6 +671,16 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
         if frame.empty:
             st.info("ไม่พบ PROJCODE ที่ระบุ Walk-in ในผลกรองนี้ ระบบไม่ถือ OP ทั้งหมดเป็น Walk-in")
             return
+        walkin = bd.walkin_summary(frame)
+        st.markdown("**สรุป Walk-in จาก PROJCODE**")
+        metrics = st.columns(5)
+        metrics[0].metric("คนไม่ซ้ำ", f"{walkin['คนไม่ซ้ำ']:,}")
+        metrics[1].metric("รายการทั้งหมด", f"{walkin['รายการ']:,}")
+        metrics[2].metric("ชดเชย", f"{walkin['ชดเชย']:,}", f"{walkin['ชดเชยบาท']:,.2f} บาท")
+        metrics[3].metric("หักคืน", f"{walkin['หักคืน']:,}", f"{walkin['หักคืนบาท']:,.2f} บาท")
+        metrics[4].metric("ไม่ชดเชย", f"{walkin['ศูนย์']:,}", "ยอด 0 บาท")
+        st.info(f"ยอด Walk-in สุทธิ {walkin['สุทธิบาท']:,.2f} บาท = ยอดบวก {walkin['ชดเชยบาท']:,.2f} หักยอดติดลบ {abs(walkin['หักคืนบาท']):,.2f} • ยอดนี้รวมอยู่ในยอดรวมแล้ว ไม่บวกซ้ำ")
+        st.dataframe(pd.DataFrame([{"หมวด": key, "ยอดสุทธิ (บาท)": value} for key, value in walkin["หมวด"].items()]), hide_index=True, width="stretch")
     fu.workspace(frame, labels[selected], prefix, download)
     # Use the same explicit/per-file mapping in price drill-down and Walk-in.
     resolved = fu.prepared(frame, labels[selected])

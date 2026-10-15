@@ -6,7 +6,7 @@ import json
 import pandas as pd
 from dashboard.data import clean_text, money
 
-SERVICE_REVIEW_VERSION = 1
+SERVICE_REVIEW_VERSION = 2
 GROUPS = ["HC", "HC-DRUG", "PP", "FS"]
 TOTAL = "ยอดชดเชยทั้งสิ้น"
 EDIT_COLUMNS = ["บริการที่ตรวจเอง", "ต้องติดตาม", "ยอดตามสมุนไพร (กรอกเอง)", "ยอดตาม PP (กรอกเอง)", "บันทึกติดตาม"]

@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 from dashboard import focus as fc
 from dashboard import services as sv
-SERVICE_REVIEW_VERSION = 1
+SERVICE_REVIEW_VERSION = 2
 from dashboard.data import clean_text
 
 
@@ -91,6 +91,17 @@ def workspace(frame, source, prefix, download):
     st.caption(f"ผลกรอง {len(rows):,} / {len(all_rows):,} รายการ • เลือกหลายหมวดใช้เงื่อนไขมียอดอย่างน้อยหนึ่งหมวด • ยอดด้านล่างเปลี่ยนตามตัวกรองชุดนี้")
     cards(rows)
     st.caption("ตัวเลขที่มีรายการไม่ทราบยอดเป็นผลรวมเฉพาะส่วนที่อ่านได้ หมวดเงินอาจซ้อนกัน จึงไม่บวกแทนยอดชดเชยทั้งสิ้น")
+    walkin = sv.walkin_status_summary(rows)
+    if walkin["รายการ"]:
+        with st.expander("FS = Walk-in ตาม PROJCODE", expanded=True):
+            st.caption("รายการ FS ในไฟล์นี้ตรงกับ PROJCODE = WALKIN จึงสรุปจำนวนคนและจำนวนรายการจากรหัสโครงการ")
+            a, b, c, d, e = st.columns(5)
+            a.metric("คนไม่ซ้ำ", f"{walkin['คนไม่ซ้ำ']:,}")
+            b.metric("รายการ", f"{walkin['รายการ']:,}")
+            c.metric("ชดเชย", f"{walkin['ชดเชย']:,}", f"{walkin['ชดเชยบาท']:,.2f} บาท")
+            d.metric("หักคืน", f"{walkin['หักคืน']:,}", f"{walkin['หักคืนบาท']:,.2f} บาท")
+            e.metric("ไม่ชดเชย", f"{walkin['ศูนย์']:,}", "ยอด 0 บาท")
+            st.info(f"FS / Walk-in สุทธิ {walkin['สุทธิบาท']:,.2f} บาท = ยอดบวก {walkin['ชดเชยบาท']:,.2f} หักยอดติดลบ {abs(walkin['หักคืนบาท']):,.2f} และรวมอยู่ในยอดชดเชยรวมแล้ว")
     if rows.empty:
         st.info("ไม่มีรายการตรงตัวกรอง ลองล้างคำค้นหรือเลือกทุกหมวด")
         return

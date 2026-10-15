@@ -3,11 +3,33 @@ import re
 import pandas as pd
 from dashboard.data import clean_text
 
-VERSION = 1
+VERSION = 2
 HERBAL_WORDS = ("ขมิ้น", "อบเช", "ไพล", "ไพรป้อม", "ขามป้อม", "ขามแขก", "มะแว้ง", "แว้ง",
                 "ฟ้าทะลาย", "มะระ", "ยาประคบ", "สหัสธารา", "เถาวัล", "เถา+", "หอมนว", "เขียวหอม",
                 "เหลืองปิด", "ว่านหาง", "ขิง", "ประสะ", "ปราชมภู", "ธาตุอบ", "ป้อม+")
 AMOUNTS = ["HC", "HC-DRUG", "PP", "FS", "OP", "ยอดชดเชยทั้งสิ้น"]
+
+
+def is_walkin_project(value):
+    value = clean_text(value).upper()
+    if re.search(r"(?:NO|NON|NOT)[\s_-]*WALK[\s_-]*IN", value):
+        return False
+    return bool(re.search(r"(?<![A-Z])WALK[\s_-]*IN(?![A-Z])", value))
+
+
+def walkin_status_summary(rows):
+    """Summary for FS/Walk-in, using PROJCODE and preserving all pay columns."""
+    if rows.empty or "PROJCODE" not in rows:
+        return {"รายการ": 0, "คนไม่ซ้ำ": 0, "ชดเชย": 0, "ชดเชยบาท": 0.0,
+                "หักคืน": 0, "หักคืนบาท": 0.0, "ศูนย์": 0, "สุทธิบาท": 0.0}
+    selected = rows.loc[rows["PROJCODE"].map(is_walkin_project)].copy()
+    total = selected.get("ยอดชดเชยทั้งสิ้น", pd.Series(dtype="Float64"))
+    pid = selected.get("PID", pd.Series("", index=selected.index)).map(clean_text)
+    valid_pid = pid.str.fullmatch(r"\d{13}")
+    return {"รายการ": int(len(selected)), "คนไม่ซ้ำ": int(pid.loc[valid_pid].nunique()),
+            "ชดเชย": int(total.gt(0).sum()), "ชดเชยบาท": float(total.clip(lower=0).sum()) / 100,
+            "หักคืน": int(total.lt(0).sum()), "หักคืนบาท": float(total.clip(upper=0).sum()) / 100,
+            "ศูนย์": int(total.eq(0).sum()), "สุทธิบาท": float(total.sum()) / 100}
 
 
 def service_group(row):
