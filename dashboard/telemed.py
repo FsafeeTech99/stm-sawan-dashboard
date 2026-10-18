@@ -126,7 +126,11 @@ def _text_tokens(value) -> set[str]:
 
 def is_uc(value) -> bool:
     text = clean_text(value).upper()
-    return any(term in text for term in ("UC", "บัตรทอง", "หลักประกันสุขภาพ", "30 บาท", "NHSO"))
+    if any(term in text for term in ("ไม่ใช่", "ไม่ใช้สิทธิ", "NON-UC", "NON UC")):
+        return False
+    if any(term in text for term in ("บัตรทอง", "หลักประกันสุขภาพ", "30 บาท")):
+        return True
+    return bool(re.search(r"(?<![A-Z0-9])(UC|NHSO)(?![A-Z0-9])", text))
 
 
 def is_telemed(value) -> bool:
