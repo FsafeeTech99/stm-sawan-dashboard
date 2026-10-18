@@ -812,7 +812,9 @@ def telemed_tab(budget, scope, demo=False):
                 if len(combined) > 100_000:
                     st.error("ข้อมูลบริการเกิน 100,000 แถว กรุณาแบ่งอัปโหลดตามช่วงวันที่")
                 else:
-                    st.session_state.telemed_services = combined.drop_duplicates(tm.TELEMED_COLUMNS).reset_index(drop=True)
+                    # Keep every source row.  Repeated rows are shown as repeated
+                    # evidence so a reviewer can trace the source file/row.
+                    st.session_state.telemed_services = combined.reset_index(drop=True)
                     st.success(f"นำเข้าแล้ว {imported:,} แถว • เก็บในเซสชันนี้ {len(st.session_state.telemed_services):,} แถว • ข้อสังเกต {notice_count:,}")
     services = st.session_state.get("telemed_services", pd.DataFrame(columns=tm.TELEMED_COLUMNS))
     if services.empty:
@@ -831,6 +833,8 @@ def telemed_tab(budget, scope, demo=False):
     cards[5].metric("ยอดเรียกเก็บ", f"{totals['เรียกเก็บ']:,.2f}", "บาท")
     cards[6].metric("ผลต่างตรวจสอบ", f"{totals['ผลต่าง']:,.2f}", "เรียกเก็บ − ชดเชย")
     st.caption("ยอดชดเชยรวมใช้ตัวเลขจากคอลัมน์ยอดชดเชยของไฟล์พึงรับ ไม่คูณจำนวนเคสซ้ำ และรายการที่จับคู่ไม่ได้ยังคงแสดงเพื่อไม่ให้ข้อมูลตกหล่น")
+    st.markdown("**สรุปแยกตามวันที่รับบริการ**")
+    st.dataframe(tm.date_summary(result), hide_index=True, width="stretch")
     if result.empty:
         st.warning("ยังไม่พบข้อมูลที่จับคู่ได้จากเลขบัตร + วันที่ + หน่วยบริการ")
         return

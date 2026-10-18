@@ -11,9 +11,8 @@ import re
 
 import pandas as pd
 
-from dashboard import clinical_input as ci
 from dashboard.data import clean_text, excel_bytes, money, normalize_code
-from dashboard.jhcis import identifier, service_date, tokens
+from dashboard.jhcis import identifier, service_date
 
 
 DEFAULT_DATES = [
@@ -234,19 +233,39 @@ def summary(result: pd.DataFrame) -> dict:
     eligible = result["ผ่านเงื่อนไขเคลม"].eq("ผ่าน")
     compensated = result["สถานะพึงรับ"].eq("ชดเชย 50 บาท")
     zero = result["สถานะพึงรับ"].eq("ไม่ชดเชย (0 บาท)")
+    charge_total = charge.sum(min_count=1)
+    paid_total = paid.sum(min_count=1)
     return {"คนไม่ซ้ำ": result["เลขบัตรประชาชน"].nunique(), "รายการบริการ": len(result),
             "ผ่านเงื่อนไข": int(eligible.sum()), "พบพึงรับ": int(found.sum()),
             "ชดเชย50": int(compensated.sum()), "ไม่ชดเชย": int(zero.sum()),
-            "เรียกเก็บ": float(charge.sum(min_count=1) or 0), "ยอดชดเชย": float(paid.sum(min_count=1) or 0),
+            "เรียกเก็บ": 0.0 if pd.isna(charge_total) else float(charge_total),
+            "ยอดชดเชย": 0.0 if pd.isna(paid_total) else float(paid_total),
             "ผลต่าง": float((charge.fillna(0) - paid.fillna(0)).sum())}
+
+
+def date_summary(result: pd.DataFrame) -> pd.DataFrame:
+    columns = ["วันที่รับบริการ", "รายการบริการ", "คนไม่ซ้ำ", "ผ่านเงื่อนไข", "พบพึงรับ",
+               "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย"]
+    if result.empty:
+        return pd.DataFrame(columns=columns)
+    frame = result.copy()
+    frame["_paid"] = pd.to_numeric(frame["ยอดชดเชย"], errors="coerce")
+    frame["_charge"] = pd.to_numeric(frame["เรียกเก็บ"], errors="coerce")
+    frame["_eligible"] = frame["ผ่านเงื่อนไขเคลม"].eq("ผ่าน")
+    frame["_found"] = frame["สถานะพึงรับ"].ne("ไม่พบแถวพึงรับ")
+    frame["_50"] = frame["สถานะพึงรับ"].eq("ชดเชย 50 บาท")
+    frame["_zero"] = frame["สถานะพึงรับ"].eq("ไม่ชดเชย (0 บาท)")
+    grouped = frame.groupby("วันที่รับบริการ", dropna=False).agg({
+        "เลขบัตรประชาชน": ["size", "nunique"], "_eligible": "sum", "_found": "sum",
+        "_50": "sum", "_zero": "sum", "_charge": "sum", "_paid": "sum",
+    }).reset_index()
+    grouped.columns = ["วันที่รับบริการ", "รายการบริการ", "คนไม่ซ้ำ", "ผ่านเงื่อนไข", "พบพึงรับ",
+                       "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย"]
+    return grouped[columns].sort_values("วันที่รับบริการ")
 
 
 def export(result: pd.DataFrame) -> bytes:
     if result.empty:
         return excel_bytes({"Telemed": result})
-    by_date = result.groupby("วันที่รับบริการ", dropna=False).agg(
-        รายการ=("เลขบัตรประชาชน", "size"), คนไม่ซ้ำ=("เลขบัตรประชาชน", "nunique"),
-        เรียกเก็บ=("เรียกเก็บ", "sum"), ยอดชดเชย=("ยอดชดเชย", "sum"),
-    ).reset_index()
-    return excel_bytes({"สรุป Telemed": by_date, "รายละเอียดตรวจสอบ": result})
+    return excel_bytes({"สรุป Telemed": date_summary(result), "รายละเอียดตรวจสอบ": result})
 
