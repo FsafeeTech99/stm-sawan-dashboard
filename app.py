@@ -88,6 +88,30 @@ st.markdown("""
  .st-key-upload_budget [data-testid="stFileUploaderDropzone"],.st-key-upload_stm [data-testid="stFileUploaderDropzone"] {background:#edf9f5;border:1px dashed #18a69a;border-radius:12px;}
  .st-key-upload_stm [data-testid="stFileUploaderDropzone"] {background:#eef4ff;border-color:#5686d6;}
  [data-testid="stFileUploader"] button {font-weight:700;}
+ .menu-heading {display:flex;align-items:end;justify-content:space-between;gap:16px;margin:20px 0 10px;}
+ .menu-heading h2 {margin:0;color:#123f5b;font-size:1.35rem;letter-spacing:-.02em;}
+ .menu-heading span {color:#52758a;font-size:.82rem;}
+ .menu-grid {display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:11px;margin:0 0 20px;}
+ .menu-card {position:relative;min-height:142px;padding:16px 14px;border:1px solid #d8e5ec;border-radius:18px;background:linear-gradient(145deg,#ffffff 0%,#f2f8fb 100%);overflow:hidden;box-shadow:0 8px 18px #123f4c0b;transition:transform .16s,box-shadow .16s,border-color .16s;}
+ .menu-card:after {content:"";position:absolute;width:80px;height:80px;right:-28px;bottom:-28px;border-radius:50%;background:var(--menu-accent);opacity:.12;}
+ .menu-card:hover {transform:translateY(-3px);box-shadow:0 13px 26px #123f4c18;border-color:var(--menu-accent);}
+ .menu-card .menu-icon {display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:13px;background:var(--menu-accent);color:white;font-size:1.38rem;margin-bottom:12px;box-shadow:0 6px 13px color-mix(in srgb,var(--menu-accent) 28%,transparent);}
+ .menu-card strong {display:block;color:#153b4e;font-size:.9rem;line-height:1.25;margin-bottom:6px;}
+ .menu-card small {display:block;color:#5b7081;font-size:.72rem;line-height:1.4;}
+ .menu-teal {--menu-accent:#087f83;} .menu-blue {--menu-accent:#2563a8;} .menu-purple {--menu-accent:#7654b8;}
+ .menu-amber {--menu-accent:#c47716;} .menu-coral {--menu-accent:#c45b55;} .menu-cyan {--menu-accent:#0891b2;}
+ [data-testid="stTabs"] [role="tab"]:nth-child(1) {border-top:3px solid #087f83;}
+ [data-testid="stTabs"] [role="tab"]:nth-child(2) {border-top:3px solid #2563a8;}
+ [data-testid="stTabs"] [role="tab"]:nth-child(3) {border-top:3px solid #7654b8;}
+ [data-testid="stTabs"] [role="tab"]:nth-child(4) {border-top:3px solid #c47716;}
+ [data-testid="stTabs"] [role="tab"]:nth-child(5) {border-top:3px solid #c45b55;}
+ [data-testid="stTabs"] [role="tab"]:nth-child(6) {border-top:3px solid #0891b2;}
+ [data-testid="stTabs"] [role="tab"]:hover {background:#ffffff;color:#123f5b;}
+ [data-testid="stTabs"] [aria-selected="true"] {border-bottom:3px solid #0b7f83;}
+ .tech-note {display:flex;align-items:center;gap:10px;padding:11px 15px;margin:4px 0 18px;border:1px solid #c9e6e5;border-radius:13px;background:linear-gradient(90deg,#ecfbf9,#f5f9ff);color:#27576b;font-size:.83rem;}
+ .tech-note b {color:#087f83;}
+ @media(max-width:1200px) {.menu-grid{grid-template-columns:repeat(3,minmax(0,1fr));}}
+ @media(max-width:650px) {.menu-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.menu-card{min-height:130px;padding:13px;}.menu-heading{display:block;}.menu-heading span{display:block;margin-top:5px;}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -95,8 +119,32 @@ st.markdown("""
 def hero():
     st.markdown("""<div class="hero"><div class="eyebrow">เครือข่ายบริการสุขภาพ อ.สว่างแดนดิน</div>
     <h1>KhamTechReCheck</h1>
-    <p>ตรวจยอดชดเชยให้ชัด • HC & สมุนไพร · PP · FS · Walk-in</p>
+    <p>ศูนย์ควบคุมงบพึงรับและบริการสุขภาพ • HC & สมุนไพร · PP · FS · Walk-in · Telemedicine</p>
     <p>เครือข่ายบริการสุขภาพ อ.สว่างแดนดิน · รพร.สว่างแดนดิน 11450 · รพ.สต. สังกัด อบจ.สกลนคร</p></div>""", unsafe_allow_html=True)
+
+
+def menu_guide():
+    """Visual navigation overview; the matching Streamlit tabs remain below."""
+    cards = [
+        ("menu-teal", "📊", "01 · พึงรับ", "นำเข้าไฟล์และตรวจยอดรวมรายหน่วย"),
+        ("menu-blue", "🧾", "02 · STM", "ตรวจ Statement และแยกหมวดเงิน"),
+        ("menu-purple", "⚖️", "03 · เปรียบเทียบ", "พึงรับ − STM พร้อมผลต่างรอตรวจสอบ"),
+        ("menu-amber", "🔎", "04 · รายละเอียด", "ค้นรายบุคคล บริการ และราคา"),
+        ("menu-coral", "🚶", "05 · Walk-in", "ดู FS จาก PROJCODE และยอดต่อรายการ"),
+        ("menu-cyan", "🩺", "06 · Telemedicine", "ตรวจ UC + NCD + TELEMED รายวัน"),
+    ]
+    html_cards = "".join(
+        f'<div class="menu-card {style}"><div class="menu-icon">{icon}</div>'
+        f'<strong>{title}</strong><small>{description}</small></div>'
+        for style, icon, title, description in cards
+    )
+    st.markdown(
+        '<div class="menu-heading"><h2>เมนูตรวจสอบหลัก</h2>'
+        '<span>เลือกแท็บด้านล่างเพื่อเปิดรายละเอียดของแต่ละงาน</span></div>'
+        f'<div class="menu-grid">{html_cards}</div>'
+        '<div class="tech-note">✨ <span><b>Workflow แนะนำ:</b> นำเข้าไฟล์ → ตรวจหัวตาราง → เปรียบเทียบยอด → เจาะรายละเอียด → ส่งออกผลตรวจ</span></div>',
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_resource
@@ -908,6 +956,7 @@ def main():
     hero()
     if scope:
         st.caption(f"กำลังตรวจสอบข้อมูล {scope} · {directory[scope]} · แสดงและส่งออกเฉพาะหน่วยบริการของบัญชี")
+    menu_guide()
     if demo:
         st.warning("โหมดตัวอย่าง · ข้อมูลทั้งหมดเป็นข้อมูลสมมติ · ไม่เปิดให้อัปโหลดข้อมูลจริง")
         if "demo_workbooks" not in st.session_state:
@@ -966,7 +1015,7 @@ def main():
             ["01 / นำเข้า Excel", "02 / ตรวจรหัสและงวด", "03 / สรุปและส่งออก"],
             ["เลือกงบพึงรับและ STM หลายไฟล์พร้อมกัน ระบบตรวจหัวตารางให้", "ใช้ HSUB ของ รพ.สต. และตั้งงวดตรงกันทั้งสองชุด", "ดูยอดรายหน่วยบริการ ผลต่างรอตรวจสอบ และดาวน์โหลด Excel"]):
             col.markdown(f'<div class="step"><strong>{title}</strong><p>{description}</p></div>', unsafe_allow_html=True)
-    tabs = st.tabs(["01 พึงรับ รพ.สต.", "02 STM", "03 เปรียบเทียบ", "04 รายละเอียดบริการ", "05 Walk-in", "06 Telemedicine"])
+    tabs = st.tabs(["📊 01 พึงรับ รพ.สต.", "🧾 02 STM", "⚖️ 03 เปรียบเทียบ", "🔎 04 รายละเอียดบริการ", "🚶 05 Walk-in", "🩺 06 Telemedicine"])
     with tabs[0]:
         dataset_tab(datasets["budget"], "budget", [a for a in audits if a["ประเภท"] == "งบพึงรับ"], len(budget_files))
     with tabs[1]:
