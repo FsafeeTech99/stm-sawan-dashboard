@@ -16,6 +16,7 @@ from dashboard import breakdown as bd
 from dashboard import jhcis as jc
 from dashboard import local_jhcis as lj
 from dashboard import clinical_input as ci
+from dashboard import telemed as tm
 from dashboard import focus_ui as fu
 from dashboard import data as data_module
 # Streamlit may rerun app.py while imported modules from the prior release
@@ -776,6 +777,73 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
              f"KhamTechReCheck_{label.replace(' ', '_')}_details.xlsx", prefix + "_details_export")
 
 
+def telemed_tab(budget, scope, demo=False):
+    """Interactive, session-local Telemedicine claim reconciliation."""
+    st.subheader("Telemedicine ปีงบประมาณ 2569")
+    st.caption("จับคู่เลขบัตรประชาชน + วันที่รับบริการ + รหัสหน่วยบริการ • แสดงเลขบัตรเฉพาะเซสชันนี้และไฟล์ที่ผู้ใช้กดส่งออก")
+    st.info("ผ่านเงื่อนไข = วันที่เป้าหมาย + DrugCode TELEMED + สิทธิ UC + ICD-10 กลุ่มโรคเรื้อรัง (เช่น I10, E11.9) ครบทุกข้อ")
+    if demo:
+        st.warning("โหมดตัวอย่างไม่รับข้อมูลผู้รับบริการจริง กรุณาเข้าสู่ระบบหน่วยบริการเพื่ออัปโหลด")
+        return
+    with st.container(border=True):
+        st.markdown("**📌 1) อัปโหลดไฟล์รายชื่อผู้รับบริการ Telemedicine**")
+        st.caption("ต้องมีเลขบัตรประชาชน, วันที่รับบริการ, สิทธิ, ICD10 และ DrugCode; รองรับ CSV/XLS/XLSX และหัวตารางที่มีบรรทัดนำหน้า")
+        service_uploads = st.file_uploader("ไฟล์ผู้รับบริการ Telemedicine", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key="telemed_service_uploads")
+        declare = st.checkbox(f"ไฟล์ไม่มีรหัสหน่วยบริการ แต่เป็นข้อมูลของหน่วย {scope}", key="telemed_declare_scope")
+        dates = st.multiselect("วันที่ Telemedicine ที่ต้องการตรวจ", tm.default_dates(), default=tm.default_dates(),
+                               format_func=lambda d: f"{d.day}/{d.month}/{str(d.year + 543)[-2:]} ({d.isoformat()})", key="telemed_dates")
+        if st.button("นำเข้าไฟล์บริการและตรวจจับคู่", type="primary", width="stretch", key="telemed_import"):
+            if not service_uploads:
+                st.warning("เลือกไฟล์ผู้รับบริการก่อน")
+            else:
+                combined = st.session_state.get("telemed_services", pd.DataFrame(columns=tm.TELEMED_COLUMNS))
+                imported, notice_count = 0, 0
+                for upload in service_uploads:
+                    try:
+                        for sheet, raw in tm.read_file(upload.name, upload.getvalue()):
+                            rows, notices = tm.normalize_service(raw, scope, upload.name, sheet, declare)
+                            combined = pd.concat([combined, rows], ignore_index=True)
+                            imported += len(rows)
+                            notice_count += len(notices)
+                            for notice in notices[:5]:
+                                st.warning(f"{upload.name} / {sheet}: {notice}")
+                    except Exception as error:
+                        st.error(f"{upload.name}: {error}")
+                if len(combined) > 100_000:
+                    st.error("ข้อมูลบริการเกิน 100,000 แถว กรุณาแบ่งอัปโหลดตามช่วงวันที่")
+                else:
+                    st.session_state.telemed_services = combined.drop_duplicates(tm.TELEMED_COLUMNS).reset_index(drop=True)
+                    st.success(f"นำเข้าแล้ว {imported:,} แถว • เก็บในเซสชันนี้ {len(st.session_state.telemed_services):,} แถว • ข้อสังเกต {notice_count:,}")
+    services = st.session_state.get("telemed_services", pd.DataFrame(columns=tm.TELEMED_COLUMNS))
+    if services.empty:
+        st.info("ยังไม่มีข้อมูลผู้รับบริการ Telemedicine ในเซสชันนี้")
+        return
+    if budget.empty:
+        st.warning("ยังไม่มีไฟล์พึงรับ รพร. ที่ตรงกับตัวกรอง กรุณาอัปโหลด/เลือกชุดข้อมูลพึงรับด้านซ้าย")
+    result = tm.reconcile(budget, services, dates)
+    totals = tm.summary(result)
+    cards = st.columns(7)
+    cards[0].metric("คนไม่ซ้ำ", f"{totals['คนไม่ซ้ำ']:,}")
+    cards[1].metric("รายการบริการ", f"{totals['รายการบริการ']:,}")
+    cards[2].metric("ผ่านเงื่อนไข", f"{totals['ผ่านเงื่อนไข']:,}")
+    cards[3].metric("ชดเชย 50 บาท", f"{totals['ชดเชย50']:,}", f"{totals['ชดเชย50'] * 50:,.2f} บาท")
+    cards[4].metric("ไม่ชดเชย", f"{totals['ไม่ชดเชย']:,}")
+    cards[5].metric("ยอดเรียกเก็บ", f"{totals['เรียกเก็บ']:,.2f}", "บาท")
+    cards[6].metric("ผลต่างตรวจสอบ", f"{totals['ผลต่าง']:,.2f}", "เรียกเก็บ − ชดเชย")
+    st.caption("ยอดชดเชยรวมใช้ตัวเลขจากคอลัมน์ยอดชดเชยของไฟล์พึงรับ ไม่คูณจำนวนเคสซ้ำ และรายการที่จับคู่ไม่ได้ยังคงแสดงเพื่อไม่ให้ข้อมูลตกหล่น")
+    if result.empty:
+        st.warning("ยังไม่พบข้อมูลที่จับคู่ได้จากเลขบัตร + วันที่ + หน่วยบริการ")
+        return
+    chosen = st.multiselect("กรองสถานะเพื่อดูรายละเอียด", sorted(result["สถานะพึงรับ"].dropna().unique()), key="telemed_status_filter")
+    shown = result.loc[result["สถานะพึงรับ"].isin(chosen)] if chosen else result
+    st.dataframe(shown, hide_index=True, width="stretch", column_config={"เลขบัตรประชาชน": st.column_config.TextColumn("เลขบัตรประชาชน")})
+    st.download_button("ดาวน์โหลดผลตรวจ Telemedicine · Excel", tm.export(shown), "KhamTechReCheck_telemed_ตรวจสอบ.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="telemed_export", width="stretch")
+    if st.button("ล้างข้อมูล Telemedicine ในเซสชัน", key="telemed_clear"):
+        st.session_state.pop("telemed_services", None)
+        st.rerun()
+
+
 def main():
     user, demo = authenticate()
     scope = None if demo else account_code(st.session_state.user)
@@ -894,7 +962,7 @@ def main():
             ["01 / นำเข้า Excel", "02 / ตรวจรหัสและงวด", "03 / สรุปและส่งออก"],
             ["เลือกงบพึงรับและ STM หลายไฟล์พร้อมกัน ระบบตรวจหัวตารางให้", "ใช้ HSUB ของ รพ.สต. และตั้งงวดตรงกันทั้งสองชุด", "ดูยอดรายหน่วยบริการ ผลต่างรอตรวจสอบ และดาวน์โหลด Excel"]):
             col.markdown(f'<div class="step"><strong>{title}</strong><p>{description}</p></div>', unsafe_allow_html=True)
-    tabs = st.tabs(["01 พึงรับ รพ.สต.", "02 STM", "03 เปรียบเทียบ", "04 รายละเอียดบริการ", "05 Walk-in"])
+    tabs = st.tabs(["01 พึงรับ รพ.สต.", "02 STM", "03 เปรียบเทียบ", "04 รายละเอียดบริการ", "05 Walk-in", "06 Telemedicine"])
     with tabs[0]:
         dataset_tab(datasets["budget"], "budget", [a for a in audits if a["ประเภท"] == "งบพึงรับ"], len(budget_files))
     with tabs[1]:
@@ -906,9 +974,12 @@ def main():
         service_tab(datasets, rules, "service", evidence=evidence)
     with tabs[4]:
         service_tab(datasets, rules, "walkin", only_walkin=True, evidence=evidence)
+    with tabs[5]:
+        telemed_tab(datasets["budget"], scope or "", demo)
     st.caption("KhamTechReCheck · สรุปจากไฟล์ที่อัปโหลดและตัวกรองปัจจุบัน · ยอดเงินหน่วยบาท · ใช้เพื่อประกอบการตรวจสอบ")
     st.caption(DEVELOPER_CREDIT)
 
 
 if __name__ == "__main__":
     main()
+
