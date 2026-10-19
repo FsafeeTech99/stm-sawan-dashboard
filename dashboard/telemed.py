@@ -233,9 +233,11 @@ def reconcile(claims: pd.DataFrame, services: pd.DataFrame, selected_dates=None)
             "TELEMED": "ผ่าน" if row.telemed_ok else "ไม่พบ TELEMED/ไม่ได้ส่งมา",
             "สิทธิ UC": "ผ่าน" if row.uc_ok else "ไม่ใช่ UC/ไม่ระบุ",
             "โรคเรื้อรัง": "ผ่าน" if row.chronic_ok else "ไม่พบ ICD10 (ใช้ได้เมื่อ OP=50)",
+            "ผ่านเงื่อนไขเคลม": "รอ OP=50 ในพึงรับ",
             "ไฟล์บริการ": row.source_file, "แถวบริการ": row.source_row,
         }
         if candidates.empty:
+            base["ผ่านเงื่อนไขเคลม"] = "ไม่พบแถวพึงรับ"
             out.append({**base, "สถานะ Telemed": "รับบริการ แต่ไม่พบพึงรับ", "สถานะพึงรับ": "ไม่พบแถวพึงรับ",
                         "เลขบัตรที่มา": row.pid, "วิธีจับคู่": "", "OP": None, "OP=50": "ไม่พบ",
                         "HC": None, "HC-DRUG": None, "PP": None, "FS": None,
@@ -245,6 +247,7 @@ def reconcile(claims: pd.DataFrame, services: pd.DataFrame, selected_dates=None)
                 paid = claim.paid_baht
                 op50 = bool(claim.op50)
                 tele_status = "ชดเชย Telemed (OP 50 บาท)" if row.date_ok and op50 else "รับบริการ แต่ไม่มี OP 50 บาท • อาจตกหล่น"
+                base["ผ่านเงื่อนไขเคลม"] = "ผ่าน" if row.date_ok and op50 else "ไม่ผ่าน: ไม่มี OP=50"
                 status = "ชดเชย 50 บาท" if paid is not None and abs(paid - 50) < 0.005 else (
                     "ไม่ชดเชย (0 บาท)" if paid is not None and abs(paid) < 0.005 else "ชดเชยจำนวนอื่น")
                 out.append({**base, "สถานะ Telemed": tele_status, "สถานะพึงรับ": status,
@@ -283,7 +286,7 @@ def summary(result: pd.DataFrame) -> dict:
 
 def date_summary(result: pd.DataFrame) -> pd.DataFrame:
     columns = ["วันที่รับบริการ", "รายการบริการ", "คนไม่ซ้ำ", "ผ่านเงื่อนไข", "พบพึงรับ",
-               "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย"]
+               "มี OP 50", "ไม่มี OP 50/ตกหล่น", "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย"]
     if result.empty:
         return pd.DataFrame(columns=columns)
     frame = result.copy()
@@ -291,14 +294,16 @@ def date_summary(result: pd.DataFrame) -> pd.DataFrame:
     frame["_charge"] = pd.to_numeric(frame["เรียกเก็บ"], errors="coerce")
     frame["_eligible"] = frame["ผ่านเงื่อนไขเคลม"].eq("ผ่าน")
     frame["_found"] = frame["สถานะพึงรับ"].ne("ไม่พบแถวพึงรับ")
+    frame["_op50"] = frame["OP=50"].eq("ใช่")
+    frame["_no_op50"] = ~frame["_op50"]
     frame["_50"] = frame["สถานะพึงรับ"].eq("ชดเชย 50 บาท")
     frame["_zero"] = frame["สถานะพึงรับ"].eq("ไม่ชดเชย (0 บาท)")
     grouped = frame.groupby("วันที่รับบริการ", dropna=False).agg({
         "เลขบัตรประชาชน": ["size", "nunique"], "_eligible": "sum", "_found": "sum",
-        "_50": "sum", "_zero": "sum", "_charge": "sum", "_paid": "sum",
+        "_op50": "sum", "_no_op50": "sum", "_50": "sum", "_zero": "sum", "_charge": "sum", "_paid": "sum",
     }).reset_index()
     grouped.columns = ["วันที่รับบริการ", "รายการบริการ", "คนไม่ซ้ำ", "ผ่านเงื่อนไข", "พบพึงรับ",
-                       "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย"]
+                       "มี OP 50", "ไม่มี OP 50/ตกหล่น", "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย"]
     return grouped[columns].sort_values("วันที่รับบริการ")
 
 
