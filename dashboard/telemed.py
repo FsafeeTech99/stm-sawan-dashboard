@@ -94,6 +94,17 @@ def read_file(filename: str, content: bytes):
         except Exception as error:
             excel_error = error
             output = []
+    # Fallback: standard Workbook exports already have the header in row 1.
+    if not output and engine:
+        try:
+            with pd.ExcelFile(pd.io.common.BytesIO(content), engine=engine) as book:
+                for sheet in book.sheet_names:
+                    direct = book.parse(sheet, header=0, dtype=object, keep_default_na=False)
+                    fields = set(column_map(direct.columns).values())
+                    if "service_date" in fields and ("pid" in fields or "patient_name" in fields or ("first_name" in fields and "last_name" in fields)):
+                        output.append((sheet, direct))
+        except Exception:
+            pass
     # Some Navicat/Excel exports are HTML tables saved with an .xls suffix.
     if not output:
         try:
