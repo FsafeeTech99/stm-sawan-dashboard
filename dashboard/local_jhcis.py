@@ -103,7 +103,7 @@ def plan_schema(schema):
     return schema
 
 
-def read_standard(config, facility, start, end, max_rows=50000, pid_filter=""):
+def read_standard(config, facility, start, end, max_rows=50000, pid_filter="", telemed_only=False):
     if not isinstance(start, date) or not isinstance(end, date) or start > end or (end - start).days > 366:
         raise ConnectionSettingsError('วันที่เริ่มต้องไม่หลังวันสิ้นสุด และช่วงวันที่ต้องไม่เกิน 366 วัน')
     cap = min(max(int(max_rows), 1), 100000)
@@ -151,6 +151,10 @@ def read_standard(config, facility, start, end, max_rows=50000, pid_filter=""):
                     if row['code'] is not None:
                         lookup.setdefault(key_pair, set()).add(str(row['code']))
                 visits[target] = ['|'.join(sorted(lookup.get((str(row.facility), str(row.visit_id)), set()))) for row in visits.itertuples()]
+        if telemed_only:
+            diag_ok = visits["icd10"].fillna("").astype(str).str.upper().str.replace(".", "", regex=False).str.contains("Z719")
+            drug_ok = visits["drugcode"].fillna("").astype(str).str.upper().str.contains("TELMED")
+            visits = visits.loc[diag_ok & drug_ok].reset_index(drop=True)
         return prepare_evidence(visits, facility)[VIEW_COLUMNS].reset_index(drop=True)
     finally:
         try:
