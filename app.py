@@ -538,7 +538,7 @@ def local_clinical(scope):
                       "password": password, "transport": {"เครื่องนี้ / LAN ภายใน": "local", "SSH tunnel ที่เปิดไว้ (localhost)": "ssh", "Internet พร้อม TLS": "tls"}[transport]}
             try:
                 with st.spinner("ตรวจโครงสร้างและอ่าน JHCIS…"):
-                    records = lj.read_standard(config, scope, *dates, pid_filter=pid_filter.strip())
+                    records = lj.read_standard(config, scope, *dates, pid_filter=pid_filter.strip(), telemed_only=telemed_only)
                 st.session_state.clinical_records = (scope, records, dates)
             except Exception as error:
                 # A running process can still have the previous module in sys.modules.
