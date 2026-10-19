@@ -199,48 +199,67 @@ def prepare_claims(frame: pd.DataFrame, scope: str) -> pd.DataFrame:
     return result.reset_index(drop=True)
 
 
+
 def reconcile(claims: pd.DataFrame, services: pd.DataFrame, selected_dates=None) -> pd.DataFrame:
     selected = set(selected_dates or DEFAULT_DATES)
     claims = prepare_claims(claims, services["facility"].iloc[0] if not services.empty else "")
     if services.empty:
         return pd.DataFrame()
     service_rows = services.copy().reset_index(drop=True)
-    service_rows["service_index"] = service_rows.index + 1
     service_rows["date_ok"] = service_rows.service_date.isin(selected)
     service_rows["telemed_ok"] = service_rows.drugcode.map(is_telemed)
     service_rows["uc_ok"] = service_rows.rights.map(is_uc)
     service_rows["chronic_ok"] = service_rows.icd10.map(is_chronic)
-    service_rows["eligible"] = service_rows[["date_ok", "telemed_ok", "uc_ok", "chronic_ok"]].all(axis=1)
+    service_rows["_name_key"] = service_rows.patient_name.map(name_key)
     key_claims = claims.assign(_key=list(zip(claims.facility, claims.pid, claims.service_date)))
-    key_services = service_rows.assign(_key=list(zip(service_rows.facility, service_rows.pid, service_rows.service_date)))
     grouped = key_claims.groupby("_key", dropna=False)
+    name_claims = claims.assign(_name_key=claims.patient_name.map(name_key))
+    name_grouped = name_claims.groupby(["facility", "_name_key", "service_date"], dropna=False)
     out = []
-    for _, row in key_services.iterrows():
-        candidates = grouped.get_group(row._key) if row._key in grouped.groups else pd.DataFrame()
+    for _, row in service_rows.iterrows():
+        key = (row.facility, row.pid, row.service_date)
+        candidates = grouped.get_group(key) if row.pid and key in grouped.groups else pd.DataFrame()
+        match_method = "PID + วันที่" if not candidates.empty else ""
+        if candidates.empty and row._name_key:
+            nkey = (row.facility, row._name_key, row.service_date)
+            if nkey in name_grouped.groups:
+                candidates = name_grouped.get_group(nkey)
+                match_method = "ชื่อ-สกุล + วันที่"
         base = {
             "วันที่รับบริการ": row.service_date, "เลขบัตรประชาชน": row.pid,
             "ชื่อผู้รับบริการ": row.patient_name, "สิทธิ": row.rights,
             "ICD10": row.icd10, "DrugCode": row.drugcode, "หน่วยบริการ": row.facility,
             "ผ่านวันเป้าหมาย": "ผ่าน" if row.date_ok else "ไม่อยู่ในวันที่เลือก",
-            "TELEMED": "ผ่าน" if row.telemed_ok else "ไม่พบ TELEMED",
+            "TELEMED": "ผ่าน" if row.telemed_ok else "ไม่พบ TELEMED/ไม่ได้ส่งมา",
             "สิทธิ UC": "ผ่าน" if row.uc_ok else "ไม่ใช่ UC/ไม่ระบุ",
-            "โรคเรื้อรัง": "ผ่าน" if row.chronic_ok else "ไม่พบ ICD10 โรคเรื้อรัง",
-            "ผ่านเงื่อนไขเคลม": "ผ่าน" if row.eligible else "ไม่ผ่าน",
+            "โรคเรื้อรัง": "ผ่าน" if row.chronic_ok else "ไม่พบ ICD10 (ใช้ได้เมื่อ OP=50)",
             "ไฟล์บริการ": row.source_file, "แถวบริการ": row.source_row,
         }
         if candidates.empty:
-            out.append({**base, "สถานะพึงรับ": "ไม่พบแถวพึงรับ", "เลขรายการพึงรับ": "", "เรียกเก็บ": None, "ยอดชดเชย": None, "บริการ": ""})
+            out.append({**base, "สถานะ Telemed": "รับบริการ แต่ไม่พบพึงรับ", "สถานะพึงรับ": "ไม่พบแถวพึงรับ",
+                        "เลขบัตรที่มา": row.pid, "วิธีจับคู่": "", "OP": None, "OP=50": "ไม่พบ",
+                        "HC": None, "HC-DRUG": None, "PP": None, "FS": None,
+                        "เลขรายการพึงรับ": "", "เรียกเก็บ": None, "ยอดชดเชย": None, "บริการ": ""})
         else:
             for _, claim in candidates.iterrows():
                 paid = claim.paid_baht
-                status = "พบพึงรับ แต่ไม่ผ่านเงื่อนไข" if not row.eligible else (
-                    "ชดเชย 50 บาท" if paid is not None and abs(paid - 50) < 0.005 else
+                op50 = bool(claim.op50)
+                tele_status = "ชดเชย Telemed (OP 50 บาท)" if row.date_ok and op50 else "รับบริการ แต่ไม่มี OP 50 บาท • อาจตกหล่น"
+                status = "ชดเชย 50 บาท" if paid is not None and abs(paid - 50) < 0.005 else (
                     "ไม่ชดเชย (0 บาท)" if paid is not None and abs(paid) < 0.005 else "ชดเชยจำนวนอื่น")
-                out.append({**base, "สถานะพึงรับ": status, "เลขรายการพึงรับ": claim.claim_index,
-                            "เรียกเก็บ": claim.charge_baht, "ยอดชดเชย": paid, "บริการ": claim.service,
-                            "PROJCODE": claim.projcode, "ไฟล์พึงรับ": claim.source_file, "ชีตพึงรับ": claim.source_sheet})
-    return pd.DataFrame(out)
-
+                out.append({**base, "สถานะ Telemed": tele_status, "สถานะพึงรับ": status,
+                            "เลขบัตรที่มา": claim.pid or row.pid, "วิธีจับคู่": match_method,
+                            "OP": claim.op_baht, "OP=50": "ใช่" if op50 else "ไม่ใช่",
+                            "HC": claim.hc_baht, "HC-DRUG": claim.hcdrug_baht,
+                            "PP": claim.pp_baht, "FS": claim.fs_baht,
+                            "เลขรายการพึงรับ": claim.claim_index, "เรียกเก็บ": claim.charge_baht,
+                            "ยอดชดเชย": paid, "บริการ": claim.service,
+                            "MAININSCL": claim.maininscl, "PROJCODE": claim.projcode,
+                            "ไฟล์พึงรับ": claim.source_file, "ชีตพึงรับ": claim.source_sheet})
+    result = pd.DataFrame(out)
+    if not result.empty:
+        result["เลขบัตรประชาชน"] = result["เลขบัตรประชาชน"].where(result["เลขบัตรประชาชน"].astype(bool), result["เลขบัตรที่มา"])
+    return result
 
 def summary(result: pd.DataFrame) -> dict:
     if result.empty:
