@@ -170,7 +170,7 @@ def _claim_column(frame: pd.DataFrame, candidates) -> str | None:
 
 def prepare_claims(frame: pd.DataFrame, scope: str) -> pd.DataFrame:
     if frame.empty:
-        return pd.DataFrame(columns=["claim_index", "facility", "pid", "service_date", "charge_baht", "paid_baht", "service", "projcode"])
+        return pd.DataFrame(columns=["claim_index", "facility", "pid", "patient_name", "service_date", "charge_baht", "paid_baht", "service", "projcode", "maininscl", "op_baht", "hc_baht", "hcdrug_baht", "pp_baht", "fs_baht", "op50"])
     pid_col = _claim_column(frame, ["PID", "เลขบัตรประชาชน", "เลขบัตร"])
     name_col = _claim_column(frame, ["ชื่อ-นามสกุล", "ชื่อผู้รับบริการ", "ชื่อ"])
     date_col = _claim_column(frame, ["วันเข้ารักษา", "วันที่รับบริการ", "วันที่บริการ"])
