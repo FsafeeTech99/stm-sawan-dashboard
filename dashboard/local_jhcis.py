@@ -123,8 +123,8 @@ def read_standard(config, facility, start, end, max_rows=50000, pid_filter="", t
             where = f' WHERE {v("pcucode")} = %s AND {v("visitdate")} >= %s AND {v("visitdate")} < DATE_ADD(%s, INTERVAL 1 DAY)'
             params = (facility, start.isoformat(), end.isoformat())
             if str(pid_filter).strip():
-                where += f' AND {p("idcard")} = %s'
-                params += (str(pid_filter).strip(),)
+                where += f' AND ({p("idcard")} = %s OR {p("pid")} = %s)'
+                params += (str(pid_filter).strip(), str(pid_filter).strip())
             params += (cap + 1,)
             nation = next((name for name in ('nation', 'nationality') if name in schema['person']['columns']), None)
             nationality = p(nation) if nation else 'NULL'
