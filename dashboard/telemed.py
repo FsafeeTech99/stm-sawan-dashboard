@@ -12,7 +12,7 @@ import re
 import pandas as pd
 
 from dashboard.data import clean_text, excel_bytes, money, normalize_code
-from dashboard.jhcis import identifier, service_date
+from dashboard.jhcis import identifier, service_date, name_key
 
 
 DEFAULT_DATES = [
@@ -23,13 +23,15 @@ CLAIM_RATE_SATANG = 5_000
 
 TELEMED_COLUMNS = [
     "facility", "pid", "patient_name", "service_date", "rights", "icd10",
-    "drugcode", "visit_id", "charge", "source_file", "source_sheet", "source_row",
+    "drugcode", "visit_id", "charge", "pid_source", "match_note", "source_file", "source_sheet", "source_row",
 ]
 
 ALIASES = {
     "facility": ["facility", "รหัสหน่วยบริการ", "HSUB", "HCODE", "pcucode"],
     "pid": ["pid", "CID", "เลขบัตรประชาชน", "เลขบัตร", "เลขประจำตัวประชาชน", "idcard"],
-    "patient_name": ["ชื่อ-นามสกุล", "ชื่อสกุล", "ชื่อผู้รับบริการ", "patient_name"],
+    "patient_name": ["ชื่อ-นามสกุล", "ชื่อสกุล", "ชื่อผู้รับบริการ", "ชื่อผู้ป่วย", "patient_name"],
+    "first_name": ["ชื่อ", "ชื่อจริง", "first_name"],
+    "last_name": ["สกุล", "นามสกุล", "last_name"],
     "service_date": ["วันที่รับบริการ", "วันที่บริการ", "วันเข้ารักษา", "visitdate", "service_date"],
     "rights": ["สิทธิ", "สิทธิ์", "สิทธิการรักษา", "สิทธิผู้ป่วย", "MAININSCL", "insurance", "right"],
     "icd10": ["ICD10", "ICD-10", "รหัสโรค", "diagcode", "diagnosis"],
@@ -57,7 +59,7 @@ def _find_header(preview: pd.DataFrame) -> int | None:
     candidates = []
     for index, row in preview.iterrows():
         fields = set(column_map(row.tolist()).values())
-        if "service_date" in fields and "pid" in fields and len(fields) >= 3:
+        if "service_date" in fields and ("pid" in fields or "patient_name" in fields or ("first_name" in fields and "last_name" in fields)) and len(fields) >= 2:
             candidates.append((len(fields), int(index)))
     return sorted(candidates, key=lambda item: (-item[0], item[1]))[0][1] if candidates else None
 
@@ -91,9 +93,9 @@ def read_file(filename: str, content: bytes):
 def normalize_service(frame: pd.DataFrame, scope: str, source: str, sheet: str,
                       declare_scope: bool = False) -> tuple[pd.DataFrame, list[str]]:
     rename = column_map(frame.columns)
-    required = {"pid", "service_date"}
-    if not required.issubset(rename.values()):
-        raise ValueError("ไฟล์ Telemedicine ต้องมีเลขบัตรประชาชนและวันที่รับบริการ")
+    required = {"service_date"}
+    if not required.issubset(rename.values()) or not ({"pid", "patient_name"} & set(rename.values()) or {"first_name", "last_name"} <= set(rename.values())):
+        raise ValueError("ไฟล์ Telemedicine ต้องมีวันที่รับบริการ และเลขบัตรหรือชื่อ-สกุล")
     if "facility" not in rename.values() and not declare_scope:
         raise ValueError("ไฟล์ไม่มีรหัสหน่วยบริการ กรุณาติ๊กยืนยันว่าเป็นข้อมูลของหน่วยบัญชีนี้")
     source_columns = {field: column for column, field in rename.items()}
@@ -101,20 +103,21 @@ def normalize_service(frame: pd.DataFrame, scope: str, source: str, sheet: str,
     for ordinal, (_, raw) in enumerate(frame.iterrows(), start=2):
         value = lambda field: clean_text(raw[source_columns[field]]) if field in source_columns else ""
         pid = identifier(value("pid"))
+        patient_name = value("patient_name") or " ".join(part for part in (value("first_name"), value("last_name")) if part)
         day = service_date(value("service_date"))
-        if not pid or day is None:
-            if any(value(field) for field in ("pid", "service_date", "drugcode", "icd10", "rights")):
-                notices.append(f"แถว {ordinal}: เลขบัตรหรือวันที่อ่านไม่ได้ จึงยังไม่ใช้จับคู่")
+        if day is None or (not pid and not patient_name):
+            notices.append(f"แถว {ordinal}: ต้องมีวันที่และเลขบัตรหรือชื่อ-สกุล จึงจะจับคู่ได้")
             continue
         facility = normalize_code(value("facility")) if "facility" in source_columns else scope if declare_scope else ""
         if facility != scope:
             notices.append(f"แถว {ordinal}: ข้ามรหัสหน่วยบริการอื่น/ไม่มีรหัส")
             continue
         rows.append({
-            "facility": scope, "pid": pid, "patient_name": value("patient_name"),
+            "facility": scope, "pid": pid, "patient_name": patient_name,
             "service_date": day, "rights": value("rights"), "icd10": value("icd10"),
             "drugcode": value("drugcode"), "visit_id": value("visit_id"),
-            "charge": value("charge"), "source_file": source, "source_sheet": sheet,
+            "charge": value("charge"), "pid_source": "ไฟล์บริการ" if pid else "รอจับคู่",
+            "match_note": "", "source_file": source, "source_sheet": sheet,
             "source_row": ordinal,
         })
     return pd.DataFrame(rows, columns=TELEMED_COLUMNS), notices
@@ -165,20 +168,32 @@ def prepare_claims(frame: pd.DataFrame, scope: str) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(columns=["claim_index", "facility", "pid", "service_date", "charge_baht", "paid_baht", "service", "projcode"])
     pid_col = _claim_column(frame, ["PID", "เลขบัตรประชาชน", "เลขบัตร"])
+    name_col = _claim_column(frame, ["ชื่อ-นามสกุล", "ชื่อผู้รับบริการ", "ชื่อ"])
     date_col = _claim_column(frame, ["วันเข้ารักษา", "วันที่รับบริการ", "วันที่บริการ"])
     charge_col = _claim_column(frame, ["เรียกเก็บ", "ยอดเรียกเก็บ"])
     paid_col = _claim_column(frame, ["ยอดชดเชยทั้งสิ้น", "ยอดชดเชยที่จ่ายจริง"])
     service_col = _claim_column(frame, ["บริการ", "ชื่อบริการ"])
     project_col = _claim_column(frame, ["PROJCODE"])
+    maininscl_col = _claim_column(frame, ["MAININSCL", "สิทธิ", "สิทธิการรักษา"])
+    op_col = _claim_column(frame, ["OP"])
+    hc_col = _claim_column(frame, ["HC"])
+    hcdrug_col = _claim_column(frame, ["HC-DRUG", "HC_DRUG", "DRUG"])
+    pp_col = _claim_column(frame, ["PP"])
+    fs_col = _claim_column(frame, ["FS"])
     result = pd.DataFrame(index=frame.index)
     result["claim_index"] = frame.index + 1
     result["facility"] = frame.get("_facility", pd.Series(scope, index=frame.index)).map(normalize_code)
     result["pid"] = frame[pid_col].map(identifier) if pid_col else ""
+    result["patient_name"] = frame[name_col].map(clean_text) if name_col else ""
     result["service_date"] = frame[date_col].map(service_date) if date_col else None
     result["charge_baht"] = frame[charge_col].map(money).map(lambda v: None if v is None else v / 100) if charge_col else None
     result["paid_baht"] = frame[paid_col].map(money).map(lambda v: None if v is None else v / 100) if paid_col else None
     result["service"] = frame[service_col].map(clean_text) if service_col else ""
     result["projcode"] = frame[project_col].map(clean_text) if project_col else ""
+    result["maininscl"] = frame[maininscl_col].map(clean_text) if maininscl_col else ""
+    for out, col in [("op_baht", op_col), ("hc_baht", hc_col), ("hcdrug_baht", hcdrug_col), ("pp_baht", pp_col), ("fs_baht", fs_col)]:
+        result[out] = frame[col].map(money).map(lambda v: None if v is None else v / 100) if col else None
+    result["op50"] = result["op_baht"].map(lambda v: v is not None and abs(v - 50) < 0.005)
     result["source_file"] = frame.get("_source_file", "")
     result["source_sheet"] = frame.get("_source_sheet", "")
     return result.reset_index(drop=True)
