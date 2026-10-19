@@ -12,7 +12,7 @@ import re
 import pandas as pd
 
 from dashboard.data import clean_text, excel_bytes, money, normalize_code
-from dashboard.jhcis import identifier, service_date, name_key
+from dashboard.jhcis import identifier, service_date
 
 
 DEFAULT_DATES = [
@@ -43,6 +43,10 @@ ALIASES = {
 
 def _key(value) -> str:
     return re.sub(r"[\s_\-./():]", "", clean_text(value)).casefold()
+
+
+def _person_key(value) -> str:
+    return re.sub(r"\s+", "", clean_text(value)).casefold()
 
 
 def column_map(columns) -> dict[str, str]:
@@ -210,7 +214,7 @@ def reconcile(claims: pd.DataFrame, services: pd.DataFrame, selected_dates=None)
     service_rows["telemed_ok"] = service_rows.drugcode.map(is_telemed)
     service_rows["uc_ok"] = service_rows.rights.map(is_uc)
     service_rows["chronic_ok"] = service_rows.icd10.map(is_chronic)
-    service_rows["_name_key"] = service_rows.patient_name.map(name_key)
+    service_rows["_name_key"] = service_rows.patient_name.map(_person_key)
     key_claims = claims.assign(_key=list(zip(claims.facility, claims.pid, claims.service_date)))
     grouped = key_claims.groupby("_key", dropna=False)
     name_claims = claims.assign(_name_key=claims.patient_name.map(name_key))
