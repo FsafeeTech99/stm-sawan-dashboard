@@ -835,9 +835,9 @@ def telemed_tab(budget, scope, demo=False):
         return
     with st.container(border=True):
         st.markdown("**📌 1) อัปโหลดไฟล์รายชื่อผู้รับบริการ Telemedicine**")
-        st.caption("มีวันที่รับบริการและเลขบัตร หรือชื่อ-สกุลก็ได้ • ICD10/DrugCode เป็นข้อมูลประกอบ • รองรับ CSV/XLS/XLSX และหัวตารางที่มีบรรทัดนำหน้า")
+        st.caption("มีวันที่รับบริการและเลขบัตร หรือชื่อ-สกุลก็ได้ • ICD10/DrugCode เป็นข้อมูลประกอบ • ถ้าไฟล์ไม่มี HCODE/HSUB ระบบจะผูกกับหน่วยที่ล็อกอินอยู่ • รองรับ CSV/XLS/XLSX")
         service_uploads = st.file_uploader("ไฟล์ผู้รับบริการ Telemedicine", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key="telemed_service_uploads")
-        declare = st.checkbox(f"ไฟล์ไม่มีรหัสหน่วยบริการ แต่เป็นข้อมูลของหน่วย {scope}", key="telemed_declare_scope")
+        declare = st.checkbox(f"ไฟล์ไม่มีรหัสหน่วยบริการ ให้ถือเป็นข้อมูลของหน่วย {scope}", value=True, key="telemed_declare_scope", help="ไฟล์ยอดรวม Telemed บางชุดไม่มี HCODE/HSUB ระบบจะผูกกับหน่วยที่ล็อกอินอยู่เท่านั้น")
         dates = st.multiselect("วันที่ Telemedicine ที่ต้องการตรวจ", tm.default_dates(), default=tm.default_dates(),
                                format_func=lambda d: f"{d.day}/{d.month}/{str(d.year + 543)[-2:]} ({d.isoformat()})", key="telemed_dates")
         if st.button("นำเข้าไฟล์บริการและตรวจจับคู่", type="primary", width="stretch", key="telemed_import"):
