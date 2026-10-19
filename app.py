@@ -829,13 +829,13 @@ def telemed_tab(budget, scope, demo=False):
     """Interactive, session-local Telemedicine claim reconciliation."""
     st.subheader("Telemedicine ปีงบประมาณ 2569")
     st.caption("จับคู่เลขบัตรประชาชน + วันที่รับบริการ + รหัสหน่วยบริการ • แสดงเลขบัตรเฉพาะเซสชันนี้และไฟล์ที่ผู้ใช้กดส่งออก")
-    st.info("ผ่านเงื่อนไข = วันที่เป้าหมาย + DrugCode TELEMED + สิทธิ UC + ICD-10 กลุ่มโรคเรื้อรัง (เช่น I10, E11.9) ครบทุกข้อ")
+    st.info("ตัวชี้ขาดการเคลม Telemed คือ OP = 50 บาทในไฟล์พึงรับ + วันที่บริการตรงกัน • ไฟล์รายชื่อไม่มี ICD10/PID ก็ได้ ระบบจับคู่ด้วยชื่อ-สกุล + วันที่ และแสดง ICD10/สิทธิเป็นข้อมูลประกอบ")
     if demo:
         st.warning("โหมดตัวอย่างไม่รับข้อมูลผู้รับบริการจริง กรุณาเข้าสู่ระบบหน่วยบริการเพื่ออัปโหลด")
         return
     with st.container(border=True):
         st.markdown("**📌 1) อัปโหลดไฟล์รายชื่อผู้รับบริการ Telemedicine**")
-        st.caption("ต้องมีเลขบัตรประชาชน, วันที่รับบริการ, สิทธิ, ICD10 และ DrugCode; รองรับ CSV/XLS/XLSX และหัวตารางที่มีบรรทัดนำหน้า")
+        st.caption("มีวันที่รับบริการและเลขบัตร หรือชื่อ-สกุลก็ได้ • ICD10/DrugCode เป็นข้อมูลประกอบ • รองรับ CSV/XLS/XLSX และหัวตารางที่มีบรรทัดนำหน้า")
         service_uploads = st.file_uploader("ไฟล์ผู้รับบริการ Telemedicine", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key="telemed_service_uploads")
         declare = st.checkbox(f"ไฟล์ไม่มีรหัสหน่วยบริการ แต่เป็นข้อมูลของหน่วย {scope}", key="telemed_declare_scope")
         dates = st.multiselect("วันที่ Telemedicine ที่ต้องการตรวจ", tm.default_dates(), default=tm.default_dates(),
