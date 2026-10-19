@@ -68,31 +68,49 @@ def _find_header(preview: pd.DataFrame) -> int | None:
     return sorted(candidates, key=lambda item: (-item[0], item[1]))[0][1] if candidates else None
 
 
+
 def read_file(filename: str, content: bytes):
-    """Read CSV/XLS/XLSX with metadata rows before the real header."""
+    """Read CSV/XLS/XLSX, including Navicat/Excel .xls files with metadata rows."""
     if len(content) > 50 * 1024 * 1024:
         raise ValueError("ไฟล์ Telemedicine ต้องไม่เกิน 50 MB ต่อไฟล์")
     if filename.lower().endswith(".csv"):
-        for encoding in ("utf-8-sig", "cp874"):
+        for encoding in ("utf-8-sig", "cp874", "tis-620"):
             try:
                 return [("CSV", pd.read_csv(pd.io.common.BytesIO(content), encoding=encoding, dtype=object, keep_default_na=False))]
-            except UnicodeDecodeError:
+            except (UnicodeDecodeError, pd.errors.ParserError):
                 continue
         raise ValueError("อ่าน CSV ไม่ได้ ใช้ UTF-8 หรือ Excel")
     engine = "openpyxl" if content.startswith(b"PK") else "xlrd" if content.startswith(bytes.fromhex("D0CF11E0A1B11AE1")) else None
-    if engine is None:
-        raise ValueError("ไฟล์นี้ไม่ใช่ Excel .xls/.xlsx ที่รองรับ")
     output = []
-    with pd.ExcelFile(pd.io.common.BytesIO(content), engine=engine) as book:
-        for sheet in book.sheet_names:
-            preview = book.parse(sheet, header=None, nrows=60, dtype=object)
-            header = _find_header(preview)
-            if header is not None:
-                output.append((sheet, book.parse(sheet, header=header, dtype=object, keep_default_na=False)))
+    excel_error = None
+    if engine:
+        try:
+            with pd.ExcelFile(pd.io.common.BytesIO(content), engine=engine) as book:
+                for sheet in book.sheet_names:
+                    preview = book.parse(sheet, header=None, nrows=60, dtype=object)
+                    header = _find_header(preview)
+                    if header is not None:
+                        output.append((sheet, book.parse(sheet, header=header, dtype=object, keep_default_na=False)))
+        except Exception as error:
+            excel_error = error
+            output = []
+    # Some Navicat/Excel exports are HTML tables saved with an .xls suffix.
     if not output:
-        raise ValueError("ไม่พบหัวตารางที่มีเลขบัตรประชาชน + วันที่รับบริการ + สิทธิ/ICD10/DrugCode")
+        try:
+            html_tables = pd.read_html(pd.io.common.BytesIO(content))
+            for index, table in enumerate(html_tables, start=1):
+                header = _find_header(table.head(60))
+                if header is not None:
+                    table = table.iloc[header:].copy()
+                    table.columns = table.iloc[0].tolist()
+                    output.append((f"HTML-{index}", table.iloc[1:].reset_index(drop=True)))
+        except Exception:
+            pass
+    if not output:
+        if excel_error:
+            raise ValueError("อ่านไฟล์ Excel ไม่ได้ กรุณาเปิดไฟล์ใน Excel แล้วบันทึกเป็น .xlsx หรือ CSV UTF-8 ก่อนอัปโหลด")
+        raise ValueError("ไม่พบหัวตารางวันที่รับบริการและ PID/ชื่อผู้รับบริการ")
     return output
-
 
 def normalize_service(frame: pd.DataFrame, scope: str, source: str, sheet: str,
                       declare_scope: bool = False) -> tuple[pd.DataFrame, list[str]]:
