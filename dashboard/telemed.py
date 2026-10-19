@@ -214,18 +214,18 @@ def reconcile(claims: pd.DataFrame, services: pd.DataFrame, selected_dates=None)
     service_rows["telemed_ok"] = service_rows.drugcode.map(is_telemed)
     service_rows["uc_ok"] = service_rows.rights.map(is_uc)
     service_rows["chronic_ok"] = service_rows.icd10.map(is_chronic)
-    service_rows["_name_key"] = service_rows.patient_name.map(_person_key)
+    service_rows["__person_key"] = service_rows.patient_name.map(_person_key)
     key_claims = claims.assign(_key=list(zip(claims.facility, claims.pid, claims.service_date)))
     grouped = key_claims.groupby("_key", dropna=False)
-    name_claims = claims.assign(_name_key=claims.patient_name.map(name_key))
-    name_grouped = name_claims.groupby(["facility", "_name_key", "service_date"], dropna=False)
+    name_claims = claims.assign(__person_key=claims.patient_name.map(_person_key))
+    name_grouped = name_claims.groupby(["facility", "__person_key", "service_date"], dropna=False)
     out = []
     for _, row in service_rows.iterrows():
         key = (row.facility, row.pid, row.service_date)
         candidates = grouped.get_group(key) if row.pid and key in grouped.groups else pd.DataFrame()
         match_method = "PID + วันที่" if not candidates.empty else ""
-        if candidates.empty and row._name_key:
-            nkey = (row.facility, row._name_key, row.service_date)
+        if candidates.empty and row.__person_key:
+            nkey = (row.facility, row.__person_key, row.service_date)
             if nkey in name_grouped.groups:
                 candidates = name_grouped.get_group(nkey)
                 match_method = "ชื่อ-สกุล + วันที่"
