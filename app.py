@@ -538,7 +538,7 @@ def local_clinical(scope):
                       "password": password, "transport": {"เครื่องนี้ / LAN ภายใน": "local", "SSH tunnel ที่เปิดไว้ (localhost)": "ssh", "Internet พร้อม TLS": "tls"}[transport]}
             try:
                 with st.spinner("ตรวจโครงสร้างและอ่าน JHCIS…"):
-                    records = lj.read_standard(config, scope, *dates)
+                    records = lj.read_standard(config, scope, *dates, pid_filter=pid_filter.strip())
                 st.session_state.clinical_records = (scope, records, dates)
             except Exception as error:
                 # A running process can still have the previous module in sys.modules.
@@ -561,6 +561,8 @@ def local_clinical(scope):
     loaded = st.session_state.get("clinical_records")
     if loaded and loaded[0] == scope:
         st.success(f"อ่าน {len(loaded[1]):,} visit • {loaded[2][0]} ถึง {loaded[2][1]}")
+        if st.session_state.get("local_db_pid_filter"):
+            st.info(f"ตัวกรอง PID: {st.session_state.local_db_pid_filter}")
         female_text = st.text_input("รหัสเพศหญิงในฐานนี้", value="2,F,FEMALE,หญิง", key="local_db_female")
         nation_codes = sorted({str(value) for value in loaded[1].nationality.dropna() if str(value).strip()})
         thai_codes = st.multiselect("เลือกรหัสที่หมายถึงสัญชาติไทยในฐานนี้", nation_codes,
