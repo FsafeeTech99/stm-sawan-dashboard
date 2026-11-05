@@ -963,6 +963,32 @@ def ndp_tab(scope, demo=False):
     st.dataframe(ndp.summary(frame), hide_index=True, width="stretch")
     st.markdown("**สรุปตามชีต Statement**")
     st.dataframe(ndp.sheet_summary(frame), hide_index=True, width="stretch")
+    st.markdown("**ตรวจรายชื่อผู้รับบริการกับ Statement ที่โอนแล้ว**")
+    st.caption("ขั้นตอนนี้ใช้ไฟล์รายชื่อบริการ เช่น ไฟล์จาก Navicat แล้วจับคู่ PID + วันที่รับบริการกับ Statement LGO")
+    service_uploads = st.file_uploader("ไฟล์รายชื่อผู้รับบริการเพื่อตรวจการชดเชย", type=["xls", "xlsx", "csv"], accept_multiple_files=True, key="ndp_service_uploads")
+    if st.button("ตรวจว่ารายชื่อใดชดเชยแล้ว", key="ndp_reconcile_services"):
+        services = pd.DataFrame(columns=tm.TELEMED_COLUMNS)
+        for upload in service_uploads or []:
+            try:
+                for sheet, raw in tm.read_file(upload.name, upload.getvalue()):
+                    rows, _ = tm.normalize_service(raw, scope or "", upload.name, sheet, True)
+                    services = pd.concat([services, rows], ignore_index=True)
+            except Exception as error:
+                st.error(f"{upload.name}: {error}")
+        if services.empty:
+            st.warning("ยังไม่พบข้อมูลรายชื่อบริการที่อ่านได้")
+        else:
+            result = ndp.reconcile(frame, services)
+            st.session_state.ndp_reconciliation = result
+            st.success(f"ตรวจสอบรายชื่อแล้ว {len(result):,} รายการ")
+    matched = st.session_state.get("ndp_reconciliation", pd.DataFrame())
+    if not matched.empty:
+        mcols = st.columns(3)
+        mcols[0].metric("รายชื่อที่ตรวจ", f"{len(matched):,}")
+        mcols[1].metric("ชดเชยแล้ว", f"{matched['สถานะ'].eq('ชดเชยแล้ว').sum():,}")
+        mcols[2].metric("ไม่พบใน Statement", f"{matched['สถานะ'].eq('ไม่พบใน Statement').sum():,}")
+        st.dataframe(matched, hide_index=True, width="stretch")
+        st.download_button("ดาวน์โหลดผลตรวจรายชื่อกับ Statement", ndp.export(matched), "KhamTechReCheck_NDP_reconciliation.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="ndp_reconcile_export")
     rights = st.multiselect("กรองสิทธิ์/กองทุน", sorted(set(frame["สิทธิ"].dropna()) | set(frame["กองทุน"].dropna())), key="ndp_right_filter")
     shown = frame if not rights else frame.loc[frame["สิทธิ"].isin(rights) | frame["กองทุน"].isin(rights)]
     st.dataframe(shown, hide_index=True, width="stretch")
