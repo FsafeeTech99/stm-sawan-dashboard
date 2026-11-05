@@ -103,7 +103,7 @@ def plan_schema(schema):
     return schema
 
 
-def read_standard(config, facility, start, end, max_rows=50000, pid_filter="", telemed_only=False):
+def read_standard(config, facility, start, end, max_rows=50000):
     if not isinstance(start, date) or not isinstance(end, date) or start > end or (end - start).days > 366:
         raise ConnectionSettingsError('วันที่เริ่มต้องไม่หลังวันสิ้นสุด และช่วงวันที่ต้องไม่เกิน 366 วัน')
     cap = min(max(int(max_rows), 1), 100000)
@@ -121,11 +121,7 @@ def read_standard(config, facility, start, end, max_rows=50000, pid_filter="", t
             # Same-person composite join: visit.pcucodeperson is not visit.pcucode.
             base = f' FROM {table("visit")} v INNER JOIN {table("person")} p ON {v("pcucodeperson")} = {p("pcucodeperson")} AND {v("pid")} = {p("pid")}'
             where = f' WHERE {v("pcucode")} = %s AND {v("visitdate")} >= %s AND {v("visitdate")} < DATE_ADD(%s, INTERVAL 1 DAY)'
-            params = (facility, start.isoformat(), end.isoformat())
-            if str(pid_filter).strip():
-                where += f' AND ({p("idcard")} = %s OR {p("pid")} = %s)'
-                params += (str(pid_filter).strip(), str(pid_filter).strip())
-            params += (cap + 1,)
+            params = (facility, start.isoformat(), end.isoformat(), cap + 1)
             nation = next((name for name in ('nation', 'nationality') if name in schema['person']['columns']), None)
             nationality = p(nation) if nation else 'NULL'
             select = (f'SELECT {v("pcucode")} AS facility, {v("visitno")} AS visit_id, {p("idcard")} AS pid, '
@@ -151,13 +147,10 @@ def read_standard(config, facility, start, end, max_rows=50000, pid_filter="", t
                     if row['code'] is not None:
                         lookup.setdefault(key_pair, set()).add(str(row['code']))
                 visits[target] = ['|'.join(sorted(lookup.get((str(row.facility), str(row.visit_id)), set()))) for row in visits.itertuples()]
-        if telemed_only:
-            diag_ok = visits["icd10"].fillna("").astype(str).str.upper().str.replace(".", "", regex=False).str.contains("Z719")
-            drug_ok = visits["drugcode"].fillna("").astype(str).str.upper().str.contains("TELMED")
-            visits = visits.loc[diag_ok & drug_ok].reset_index(drop=True)
         return prepare_evidence(visits, facility)[VIEW_COLUMNS].reset_index(drop=True)
     finally:
         try:
             connection.rollback()
         finally:
             connection.close()
+
