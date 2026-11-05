@@ -157,13 +157,16 @@ def reconcile(statement, services):
             method = "ชื่อ-สกุล + วันที่" if hits else ""
         if hits:
             matched = paid.loc[hits]
+            rep_values = ", ".join(sorted(set(matched["REP_NO"].astype(str).replace("nan", ""))))
+            file_values = ", ".join(sorted(set(matched["ไฟล์"].astype(str))))
             rows.append({"PID": pid, "ชื่อผู้รับบริการ": service.get("patient_name", ""), "วันที่รับบริการ": day,
                          "สถานะ": "ชดเชยแล้ว", "วิธีจับคู่": method, "จำนวนรายการ": len(matched),
-                         "ยอดชดเชย": matched["ยอดชดเชย"].sum(), "REP_NO": ", ".join(sorted(set(matched["REP_NO"].astype(str)))),
+                         "ยอดชดเชย": matched["ยอดชดเชย"].sum(), "REP_NO": rep_values,
+                         "งวด/REP ที่โอน": rep_values, "ไฟล์ Statement": file_values,
                          "ชีต": ", ".join(sorted(set(matched["ชีต"].astype(str))))})
         else:
             rows.append({"PID": pid, "ชื่อผู้รับบริการ": service.get("patient_name", ""), "วันที่รับบริการ": day,
                          "สถานะ": "ไม่พบใน Statement", "วิธีจับคู่": "", "จำนวนรายการ": 0,
-                         "ยอดชดเชย": 0.0, "REP_NO": "", "ชีต": ""})
+                         "ยอดชดเชย": 0.0, "REP_NO": "", "งวด/REP ที่โอน": "", "ไฟล์ Statement": "", "ชีต": ""})
     return pd.DataFrame(rows)
 
