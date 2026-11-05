@@ -129,3 +129,41 @@ def sheet_summary(frame):
 def export(frame):
     return excel_bytes({"สรุปตามสิทธิ": summary(frame), "สรุปตามชีต": sheet_summary(frame), "รายละเอียด": frame})
 
+
+def reconcile(statement, services):
+    """Match a service list to paid NDP statement rows by PID/date, then name/date."""
+    if services is None or services.empty:
+        return pd.DataFrame()
+    paid = statement.copy()
+    paid["_day"] = paid["วันที่รับบริการ"].map(service_date)
+    paid["_pid"] = paid["PID"].map(identifier)
+    paid["_name"] = paid["ชื่อผู้รับบริการ"].map(lambda x: re.sub(r"\s+", "", clean_text(x)).casefold())
+    by_pid_day = {}
+    by_name_day = {}
+    for idx, row in paid.iterrows():
+        if row["_pid"] and row["_day"] is not None:
+            by_pid_day.setdefault((row["_pid"], row["_day"]), []).append(idx)
+        if row["_name"] and row["_day"] is not None:
+            by_name_day.setdefault((row["_name"], row["_day"]), []).append(idx)
+    rows = []
+    for _, service in services.iterrows():
+        pid = identifier(service.get("pid", ""))
+        day = service.get("service_date")
+        name = re.sub(r"\s+", "", clean_text(service.get("patient_name", ""))).casefold()
+        hits = by_pid_day.get((pid, day), []) if pid and day is not None else []
+        method = "PID + วันที่" if hits else ""
+        if not hits and name and day is not None:
+            hits = by_name_day.get((name, day), [])
+            method = "ชื่อ-สกุล + วันที่" if hits else ""
+        if hits:
+            matched = paid.loc[hits]
+            rows.append({"PID": pid, "ชื่อผู้รับบริการ": service.get("patient_name", ""), "วันที่รับบริการ": day,
+                         "สถานะ": "ชดเชยแล้ว", "วิธีจับคู่": method, "จำนวนรายการ": len(matched),
+                         "ยอดชดเชย": matched["ยอดชดเชย"].sum(), "REP_NO": ", ".join(sorted(set(matched["REP_NO"].astype(str)))),
+                         "ชีต": ", ".join(sorted(set(matched["ชีต"].astype(str))))})
+        else:
+            rows.append({"PID": pid, "ชื่อผู้รับบริการ": service.get("patient_name", ""), "วันที่รับบริการ": day,
+                         "สถานะ": "ไม่พบใน Statement", "วิธีจับคู่": "", "จำนวนรายการ": 0,
+                         "ยอดชดเชย": 0.0, "REP_NO": "", "ชีต": ""})
+    return pd.DataFrame(rows)
+
