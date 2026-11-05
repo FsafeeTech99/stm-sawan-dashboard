@@ -1,8 +1,8 @@
 """Upload-only Telemedicine reconciliation.
 
-The module deliberately keeps the clinical file in the current Streamlit
-session.  It does not connect to JHCIS and it never guesses an identity from
-name alone: a claim is linked by citizen ID, service date, and facility.
+The module deliberately keeps uploaded clinical files in the current
+Streamlit session.  Name matching is only a fallback with service date and a
+unique reference ID; a name alone never establishes identity.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import re
 import pandas as pd
 
 from dashboard.data import clean_text, excel_bytes, money, normalize_code
-from dashboard.jhcis import identifier, service_date
+from dashboard.jhcis import identifier, name_key, service_date
 
 
 DEFAULT_DATES = [
@@ -23,15 +23,16 @@ CLAIM_RATE_SATANG = 5_000
 
 TELEMED_COLUMNS = [
     "facility", "pid", "patient_name", "service_date", "rights", "icd10",
-    "drugcode", "visit_id", "charge", "pid_source", "match_note", "source_file", "source_sheet", "source_row",
+    "drugcode", "visit_id", "charge", "pid_source", "match_note",
+    "source_file", "source_sheet", "source_row",
 ]
 
 ALIASES = {
     "facility": ["facility", "รหัสหน่วยบริการ", "HSUB", "HCODE", "pcucode"],
     "pid": ["pid", "CID", "เลขบัตรประชาชน", "เลขบัตร", "เลขประจำตัวประชาชน", "idcard"],
-    "patient_name": ["ชื่อ-นามสกุล", "ชื่อสกุล", "ชื่อผู้รับบริการ", "ชื่อผู้ป่วย", "patient_name"],
-    "first_name": ["ชื่อ", "ชื่อจริง", "first_name"],
-    "last_name": ["สกุล", "นามสกุล", "last_name"],
+    "patient_name": ["ชื่อ-นามสกุล", "ชื่อสกุล", "ชื่อผู้รับบริการ", "patient_name", "ชื่อ"],
+    "first_name": ["ชื่อ", "ชื่อจริง", "fname", "firstname"],
+    "last_name": ["สกุล", "นามสกุล", "lname", "lastname"],
     "service_date": ["วันที่รับบริการ", "วันที่บริการ", "วันเข้ารักษา", "visitdate", "service_date"],
     "rights": ["สิทธิ", "สิทธิ์", "สิทธิการรักษา", "สิทธิผู้ป่วย", "MAININSCL", "insurance", "right"],
     "icd10": ["ICD10", "ICD-10", "รหัสโรค", "diagcode", "diagnosis"],
@@ -43,10 +44,6 @@ ALIASES = {
 
 def _key(value) -> str:
     return re.sub(r"[\s_\-./():]", "", clean_text(value)).casefold()
-
-
-def _person_key(value) -> str:
-    return re.sub(r"\s+", "", clean_text(value)).casefold()
 
 
 def column_map(columns) -> dict[str, str]:
@@ -63,71 +60,42 @@ def _find_header(preview: pd.DataFrame) -> int | None:
     candidates = []
     for index, row in preview.iterrows():
         fields = set(column_map(row.tolist()).values())
-        if "service_date" in fields and ("pid" in fields or "patient_name" in fields or ("first_name" in fields and "last_name" in fields)) and len(fields) >= 2:
+        has_name = bool(fields.intersection({"patient_name", "first_name", "last_name"}))
+        if "service_date" in fields and ("pid" in fields or has_name) and len(fields) >= 3:
             candidates.append((len(fields), int(index)))
     return sorted(candidates, key=lambda item: (-item[0], item[1]))[0][1] if candidates else None
 
 
-
 def read_file(filename: str, content: bytes):
-    """Read CSV/XLS/XLSX, including Navicat/Excel .xls files with metadata rows."""
+    """Read CSV/XLS/XLSX with metadata rows before the real header."""
     if len(content) > 50 * 1024 * 1024:
         raise ValueError("ไฟล์ Telemedicine ต้องไม่เกิน 50 MB ต่อไฟล์")
     if filename.lower().endswith(".csv"):
-        for encoding in ("utf-8-sig", "cp874", "tis-620"):
+        for encoding in ("utf-8-sig", "cp874"):
             try:
                 return [("CSV", pd.read_csv(pd.io.common.BytesIO(content), encoding=encoding, dtype=object, keep_default_na=False))]
-            except (UnicodeDecodeError, pd.errors.ParserError):
+            except UnicodeDecodeError:
                 continue
         raise ValueError("อ่าน CSV ไม่ได้ ใช้ UTF-8 หรือ Excel")
     engine = "openpyxl" if content.startswith(b"PK") else "xlrd" if content.startswith(bytes.fromhex("D0CF11E0A1B11AE1")) else None
+    if engine is None:
+        raise ValueError("ไฟล์นี้ไม่ใช่ Excel .xls/.xlsx ที่รองรับ")
     output = []
-    excel_error = None
-    if engine:
-        try:
-            with pd.ExcelFile(pd.io.common.BytesIO(content), engine=engine) as book:
-                for sheet in book.sheet_names:
-                    preview = book.parse(sheet, header=None, nrows=60, dtype=object)
-                    header = _find_header(preview)
-                    if header is not None:
-                        output.append((sheet, book.parse(sheet, header=header, dtype=object, keep_default_na=False)))
-        except Exception as error:
-            excel_error = error
-            output = []
-    # Fallback: standard Workbook exports already have the header in row 1.
-    if not output and engine:
-        try:
-            with pd.ExcelFile(pd.io.common.BytesIO(content), engine=engine) as book:
-                for sheet in book.sheet_names:
-                    direct = book.parse(sheet, header=0, dtype=object, keep_default_na=False)
-                    fields = set(column_map(direct.columns).values())
-                    if "service_date" in fields and ("pid" in fields or "patient_name" in fields or ("first_name" in fields and "last_name" in fields)):
-                        output.append((sheet, direct))
-        except Exception:
-            pass
-    # Some Navicat/Excel exports are HTML tables saved with an .xls suffix.
+    with pd.ExcelFile(pd.io.common.BytesIO(content), engine=engine) as book:
+        for sheet in book.sheet_names:
+            preview = book.parse(sheet, header=None, nrows=60, dtype=object)
+            header = _find_header(preview)
+            if header is not None:
+                output.append((sheet, book.parse(sheet, header=header, dtype=object, keep_default_na=False)))
     if not output:
-        try:
-            html_tables = pd.read_html(pd.io.common.BytesIO(content))
-            for index, table in enumerate(html_tables, start=1):
-                header = _find_header(table.head(60))
-                if header is not None:
-                    table = table.iloc[header:].copy()
-                    table.columns = table.iloc[0].tolist()
-                    output.append((f"HTML-{index}", table.iloc[1:].reset_index(drop=True)))
-        except Exception:
-            pass
-    if not output:
-        if excel_error:
-            raise ValueError("อ่านไฟล์ Excel ไม่ได้ กรุณาเปิดไฟล์ใน Excel แล้วบันทึกเป็น .xlsx หรือ CSV UTF-8 ก่อนอัปโหลด")
-        raise ValueError("ไม่พบหัวตารางวันที่รับบริการและ PID/ชื่อผู้รับบริการ")
+        raise ValueError("ไม่พบหัวตารางที่มีวันที่รับบริการ + ชื่อ/เลขบัตร + สิทธิ/ICD10/DrugCode")
     return output
+
 
 def normalize_service(frame: pd.DataFrame, scope: str, source: str, sheet: str,
                       declare_scope: bool = False) -> tuple[pd.DataFrame, list[str]]:
     rename = column_map(frame.columns)
-    required = {"service_date"}
-    if not required.issubset(rename.values()) or not ({"pid", "patient_name"} & set(rename.values()) or {"first_name", "last_name"} <= set(rename.values())):
+    if "service_date" not in rename.values() or not set(rename.values()).intersection({"pid", "patient_name", "first_name", "last_name"}):
         raise ValueError("ไฟล์ Telemedicine ต้องมีวันที่รับบริการ และเลขบัตรหรือชื่อ-สกุล")
     if "facility" not in rename.values() and not declare_scope:
         raise ValueError("ไฟล์ไม่มีรหัสหน่วยบริการ กรุณาติ๊กยืนยันว่าเป็นข้อมูลของหน่วยบัญชีนี้")
@@ -136,10 +104,13 @@ def normalize_service(frame: pd.DataFrame, scope: str, source: str, sheet: str,
     for ordinal, (_, raw) in enumerate(frame.iterrows(), start=2):
         value = lambda field: clean_text(raw[source_columns[field]]) if field in source_columns else ""
         pid = identifier(value("pid"))
-        patient_name = value("patient_name") or " ".join(part for part in (value("first_name"), value("last_name")) if part)
         day = service_date(value("service_date"))
-        if day is None or (not pid and not patient_name):
-            notices.append(f"แถว {ordinal}: ต้องมีวันที่และเลขบัตรหรือชื่อ-สกุล จึงจะจับคู่ได้")
+        first = value("first_name")
+        last = value("last_name")
+        patient_name = value("patient_name") or " ".join(part for part in (first, last) if part).strip()
+        if (not pid and not patient_name) or day is None:
+            if any(value(field) for field in ("pid", "patient_name", "first_name", "last_name", "service_date", "drugcode", "icd10", "rights")):
+                notices.append(f"แถว {ordinal}: ชื่อ/เลขบัตรหรือวันที่อ่านไม่ได้ จึงยังไม่ใช้จับคู่")
             continue
         facility = normalize_code(value("facility")) if "facility" in source_columns else scope if declare_scope else ""
         if facility != scope:
@@ -149,11 +120,57 @@ def normalize_service(frame: pd.DataFrame, scope: str, source: str, sheet: str,
             "facility": scope, "pid": pid, "patient_name": patient_name,
             "service_date": day, "rights": value("rights"), "icd10": value("icd10"),
             "drugcode": value("drugcode"), "visit_id": value("visit_id"),
-            "charge": value("charge"), "pid_source": "ไฟล์บริการ" if pid else "รอจับคู่",
-            "match_note": "", "source_file": source, "source_sheet": sheet,
-            "source_row": ordinal,
+            "charge": value("charge"), "pid_source": "มีในไฟล์บริการ" if pid else "ยังไม่มีเลขบัตร",
+            "match_note": "รอเทียบไฟล์อ้างอิง" if not pid else "",
+            "source_file": source, "source_sheet": sheet, "source_row": ordinal,
         })
     return pd.DataFrame(rows, columns=TELEMED_COLUMNS), notices
+
+
+def from_jhcis(records: pd.DataFrame, scope: str) -> pd.DataFrame:
+    """Adapt the existing read-only JHCIS visit evidence to the Telemed schema."""
+    if records is None or records.empty:
+        return pd.DataFrame(columns=TELEMED_COLUMNS)
+    rows = []
+    for _, row in records.iterrows():
+        pid = identifier(row.get("pid", ""))
+        day = service_date(row.get("service_date"))
+        if not pid or day is None:
+            continue
+        rows.append({
+            "facility": scope, "pid": pid, "patient_name": clean_text(row.get("patient_name", "")),
+            "service_date": day, "rights": clean_text(row.get("rights", "")),
+            "icd10": clean_text(row.get("icd10", "")), "drugcode": clean_text(row.get("drugcode", "")),
+            "visit_id": clean_text(row.get("visit_id", "")), "charge": "",
+            "pid_source": "JHCIS", "match_note": "", "source_file": "JHCIS", "source_sheet": "", "source_row": "",
+        })
+    return pd.DataFrame(rows, columns=TELEMED_COLUMNS)
+
+
+def fill_missing_pids(services: pd.DataFrame, reference: pd.DataFrame) -> pd.DataFrame:
+    """Fill blank IDs only when name+date resolves to one reference ID."""
+    if services.empty or reference.empty:
+        return services.copy()
+    result = services.copy()
+    ref = reference.copy()
+    ref["_name_key"] = ref["patient_name"].map(name_key)
+    ref["_key"] = list(zip(ref.facility, ref._name_key, ref.service_date))
+    lookup = {}
+    for key, group in ref.groupby("_key", dropna=False):
+        ids = sorted({pid for pid in group.pid if pid})
+        if len(ids) == 1:
+            lookup[key] = ids[0]
+    for index, row in result.iterrows():
+        if row.pid:
+            continue
+        key = (row.facility, name_key(row.patient_name), row.service_date)
+        if key in lookup:
+            result.at[index, "pid"] = lookup[key]
+            result.at[index, "pid_source"] = "เติมจากไฟล์อ้างอิง"
+            result.at[index, "match_note"] = "เติมเลขบัตรจากชื่อ-สกุล + วันที่"
+        else:
+            result.at[index, "match_note"] = "ไม่พบเลขบัตรที่ตรงกัน หรือมีหลายคนชื่อเดียวกัน"
+    return result
 
 
 def _text_tokens(value) -> set[str]:
@@ -199,38 +216,41 @@ def _claim_column(frame: pd.DataFrame, candidates) -> str | None:
 
 def prepare_claims(frame: pd.DataFrame, scope: str) -> pd.DataFrame:
     if frame.empty:
-        return pd.DataFrame(columns=["claim_index", "facility", "pid", "patient_name", "service_date", "charge_baht", "paid_baht", "service", "projcode", "maininscl", "op_baht", "hc_baht", "hcdrug_baht", "pp_baht", "fs_baht", "op50"])
+        return pd.DataFrame(columns=["claim_index", "facility", "pid", "patient_name", "service_date", "charge_baht", "paid_baht", "service", "projcode"])
     pid_col = _claim_column(frame, ["PID", "เลขบัตรประชาชน", "เลขบัตร"])
-    name_col = _claim_column(frame, ["ชื่อ-นามสกุล", "ชื่อผู้รับบริการ", "ชื่อ"])
+    name_col = _claim_column(frame, ["ชื่อ-นามสกุล", "ชื่อผู้รับบริการ", "ชื่อสกุล"])
+    first_col = _claim_column(frame, ["ชื่อ", "fname", "firstname"])
+    last_col = _claim_column(frame, ["สกุล", "นามสกุล", "lname", "lastname"])
     date_col = _claim_column(frame, ["วันเข้ารักษา", "วันที่รับบริการ", "วันที่บริการ"])
     charge_col = _claim_column(frame, ["เรียกเก็บ", "ยอดเรียกเก็บ"])
     paid_col = _claim_column(frame, ["ยอดชดเชยทั้งสิ้น", "ยอดชดเชยที่จ่ายจริง"])
     service_col = _claim_column(frame, ["บริการ", "ชื่อบริการ"])
     project_col = _claim_column(frame, ["PROJCODE"])
-    maininscl_col = _claim_column(frame, ["MAININSCL", "สิทธิ", "สิทธิการรักษา"])
-    op_col = _claim_column(frame, ["OP"])
-    hc_col = _claim_column(frame, ["HC"])
-    hcdrug_col = _claim_column(frame, ["HC-DRUG", "HC_DRUG", "DRUG"])
-    pp_col = _claim_column(frame, ["PP"])
-    fs_col = _claim_column(frame, ["FS"])
     result = pd.DataFrame(index=frame.index)
     result["claim_index"] = frame.index + 1
     result["facility"] = frame.get("_facility", pd.Series(scope, index=frame.index)).map(normalize_code)
     result["pid"] = frame[pid_col].map(identifier) if pid_col else ""
-    result["patient_name"] = frame[name_col].map(clean_text) if name_col else ""
+    if name_col:
+        result["patient_name"] = frame[name_col].map(clean_text)
+    else:
+        first = frame[first_col].map(clean_text) if first_col else pd.Series("", index=frame.index)
+        last = frame[last_col].map(clean_text) if last_col else pd.Series("", index=frame.index)
+        result["patient_name"] = [" ".join(part for part in (a, b) if part).strip() for a, b in zip(first, last)]
     result["service_date"] = frame[date_col].map(service_date) if date_col else None
     result["charge_baht"] = frame[charge_col].map(money).map(lambda v: None if v is None else v / 100) if charge_col else None
     result["paid_baht"] = frame[paid_col].map(money).map(lambda v: None if v is None else v / 100) if paid_col else None
     result["service"] = frame[service_col].map(clean_text) if service_col else ""
     result["projcode"] = frame[project_col].map(clean_text) if project_col else ""
-    result["maininscl"] = frame[maininscl_col].map(clean_text) if maininscl_col else ""
-    for out, col in [("op_baht", op_col), ("hc_baht", hc_col), ("hcdrug_baht", hcdrug_col), ("pp_baht", pp_col), ("fs_baht", fs_col)]:
-        result[out] = frame[col].map(money).map(lambda v: None if v is None else v / 100) if col else None
-    result["op50"] = result["op_baht"].map(lambda v: v is not None and abs(v - 50) < 0.005)
     result["source_file"] = frame.get("_source_file", "")
     result["source_sheet"] = frame.get("_source_sheet", "")
+    for output, candidates in {
+        "HC_baht": ["HC"], "HC_DRUG_baht": ["HC-DRUG", "HC_DRUG", "DRUG"],
+        "PP_baht": ["PP"], "FS_baht": ["FS"], "OP_baht": ["OP"],
+    }.items():
+        col = _claim_column(frame, candidates)
+        values = frame[col].map(money) if col else pd.Series(None, index=frame.index)
+        result[output] = values.map(lambda v: None if v is None else v / 100)
     return result.reset_index(drop=True)
-
 
 
 def reconcile(claims: pd.DataFrame, services: pd.DataFrame, selected_dates=None) -> pd.DataFrame:
@@ -239,68 +259,61 @@ def reconcile(claims: pd.DataFrame, services: pd.DataFrame, selected_dates=None)
     if services.empty:
         return pd.DataFrame()
     service_rows = services.copy().reset_index(drop=True)
+    service_rows["service_index"] = service_rows.index + 1
     service_rows["date_ok"] = service_rows.service_date.isin(selected)
     service_rows["telemed_ok"] = service_rows.drugcode.map(is_telemed)
     service_rows["uc_ok"] = service_rows.rights.map(is_uc)
     service_rows["chronic_ok"] = service_rows.icd10.map(is_chronic)
-    service_rows["__person_key"] = service_rows.patient_name.map(_person_key)
-    key_claims = claims.assign(_key=list(zip(claims.facility, claims.pid, claims.service_date)))
-    grouped = key_claims.groupby("_key", dropna=False)
-    name_claims = claims.assign(__person_key=claims.patient_name.map(_person_key))
-    name_grouped = name_claims.groupby(["facility", "__person_key", "service_date"], dropna=False)
+    service_rows["eligible"] = service_rows[["date_ok", "telemed_ok", "uc_ok", "chronic_ok"]].all(axis=1)
+    key_claims = claims.assign(_pid_key=list(zip(claims.facility, claims.pid, claims.service_date)),
+                               _name_key=list(zip(claims.facility, claims.patient_name.map(name_key), claims.service_date)))
+    key_services = service_rows.assign(_pid_key=list(zip(service_rows.facility, service_rows.pid, service_rows.service_date)),
+                                       _name_key=list(zip(service_rows.facility, service_rows.patient_name.map(name_key), service_rows.service_date)))
+    grouped_pid = key_claims.groupby("_pid_key", dropna=False)
+    grouped_name = key_claims.groupby("_name_key", dropna=False)
     out = []
-    for _, row in service_rows.iterrows():
-        key = (row.facility, row.pid, row.service_date)
-        candidates = grouped.get_group(key) if row.pid and key in grouped.groups else pd.DataFrame()
-        match_method = "PID + วันที่" if not candidates.empty else ""
-        if candidates.empty and row.__person_key:
-            nkey = (row.facility, row.__person_key, row.service_date)
-            if nkey in name_grouped.groups:
-                candidates = name_grouped.get_group(nkey)
-                match_method = "ชื่อ-สกุล + วันที่"
+    for _, row in key_services.iterrows():
+        candidates = grouped_pid.get_group(row["_pid_key"]) if row.pid and row["_pid_key"] in grouped_pid.groups else pd.DataFrame()
+        match_kind = "เลขบัตร + วันที่"
+        if candidates.empty and row.patient_name:
+            candidates = grouped_name.get_group(row["_name_key"]) if row["_name_key"] in grouped_name.groups and row["_name_key"][1] else pd.DataFrame()
+            match_kind = "ชื่อ-สกุล + วันที่"
         base = {
             "วันที่รับบริการ": row.service_date, "เลขบัตรประชาชน": row.pid,
             "ชื่อผู้รับบริการ": row.patient_name, "สิทธิ": row.rights,
             "ICD10": row.icd10, "DrugCode": row.drugcode, "หน่วยบริการ": row.facility,
             "ผ่านวันเป้าหมาย": "ผ่าน" if row.date_ok else "ไม่อยู่ในวันที่เลือก",
-            "TELEMED": "ผ่าน" if row.telemed_ok else "ไม่พบ TELEMED/ไม่ได้ส่งมา",
+            "TELEMED": "ผ่าน" if row.telemed_ok else "ไม่พบ TELEMED",
             "สิทธิ UC": "ผ่าน" if row.uc_ok else "ไม่ใช่ UC/ไม่ระบุ",
-            "โรคเรื้อรัง": "ผ่าน" if row.chronic_ok else "ไม่พบ ICD10 (ใช้ได้เมื่อ OP=50)",
-            "ผ่านเงื่อนไขเคลม": "รอ OP=50 ในพึงรับ",
-            "ไฟล์บริการ": row.source_file, "แถวบริการ": row.source_row,
+            "โรคเรื้อรัง": "ผ่าน" if row.chronic_ok else "ไม่พบ ICD10 โรคเรื้อรัง",
+            "ผ่านเงื่อนไขเคลม": "ผ่าน" if row.eligible else "ไม่ผ่าน",
+            "เลขบัตรที่มา": row.pid_source, "วิธีจับคู่": "", "ไฟล์บริการ": row.source_file, "แถวบริการ": row.source_row,
         }
         if candidates.empty:
-            base["ผ่านเงื่อนไขเคลม"] = "ไม่พบแถวพึงรับ"
-            out.append({**base, "สถานะ Telemed": "รับบริการ แต่ไม่พบพึงรับ", "สถานะพึงรับ": "ไม่พบแถวพึงรับ",
-                        "เลขบัตรที่มา": row.pid, "วิธีจับคู่": "", "OP": None, "OP=50": "ไม่พบ",
-                        "HC": None, "HC-DRUG": None, "PP": None, "FS": None,
-                        "เลขรายการพึงรับ": "", "เรียกเก็บ": None, "ยอดชดเชย": None, "บริการ": ""})
+            out.append({**base, "สถานะพึงรับ": "ไม่พบแถวพึงรับ", "เลขรายการพึงรับ": "", "เรียกเก็บ": None, "ยอดชดเชย": None, "บริการ": "", "วิธีจับคู่": "ยังไม่พบจากเลขบัตร/ชื่อ + วันที่",
+                        "HC": None, "HC-DRUG": None, "PP": None, "FS": None, "OP": None,
+                        "สถานะ HC": "ไม่พบพึงรับ", "สถานะ HC-DRUG": "ไม่พบพึงรับ"})
         else:
             for _, claim in candidates.iterrows():
                 paid = claim.paid_baht
-                op50 = bool(claim.op50)
-                tele_status = "ชดเชย Telemed (OP 50 บาท)" if row.date_ok and op50 else "รับบริการ แต่ไม่มี OP 50 บาท • อาจตกหล่น"
-                base["ผ่านเงื่อนไขเคลม"] = "ผ่าน" if row.date_ok and op50 else "ไม่ผ่าน: ไม่มี OP=50"
-                status = "ชดเชย 50 บาท" if paid is not None and abs(paid - 50) < 0.005 else (
+                status = "พบพึงรับ แต่ไม่ผ่านเงื่อนไข" if not row.eligible else (
+                    "ชดเชย 50 บาท" if paid is not None and abs(paid - 50) < 0.005 else
                     "ไม่ชดเชย (0 บาท)" if paid is not None and abs(paid) < 0.005 else "ชดเชยจำนวนอื่น")
-                out.append({**base, "สถานะ Telemed": tele_status, "สถานะพึงรับ": status,
-                            "เลขบัตรที่มา": claim.pid or row.pid, "วิธีจับคู่": match_method,
-                            "OP": claim.op_baht, "OP=50": "ใช่" if op50 else "ไม่ใช่",
-                            "HC": claim.hc_baht, "HC-DRUG": claim.hcdrug_baht,
-                            "PP": claim.pp_baht, "FS": claim.fs_baht,
-                            "เลขรายการพึงรับ": claim.claim_index, "เรียกเก็บ": claim.charge_baht,
-                            "ยอดชดเชย": paid, "บริการ": claim.service,
-                            "MAININSCL": claim.maininscl, "PROJCODE": claim.projcode,
-                            "ไฟล์พึงรับ": claim.source_file, "ชีตพึงรับ": claim.source_sheet})
-    result = pd.DataFrame(out)
-    if not result.empty:
-        result["เลขบัตรประชาชน"] = result["เลขบัตรประชาชน"].where(result["เลขบัตรประชาชน"].astype(bool), result["เลขบัตรที่มา"])
-    return result
+                out.append({**base, "เลขบัตรประชาชน": row.pid or claim.pid,
+                            "สถานะพึงรับ": status, "เลขรายการพึงรับ": claim.claim_index,
+                            "เรียกเก็บ": claim.charge_baht, "ยอดชดเชย": paid, "บริการ": claim.service,
+                            "PROJCODE": claim.projcode, "วิธีจับคู่": match_kind,
+                            "HC": claim.HC_baht, "HC-DRUG": claim.HC_DRUG_baht, "PP": claim.PP_baht, "FS": claim.FS_baht,
+                            "สถานะ HC": "ชดเชย" if (claim.HC_baht or 0) > 0 else "ไม่ชดเชย/ไม่มี",
+                            "สถานะ HC-DRUG": "ชดเชย" if (claim.HC_DRUG_baht or 0) > 0 else "ไม่ชดเชย/ไม่มี",
+                            "OP": claim.OP_baht, "ไฟล์พึงรับ": claim.source_file, "ชีตพึงรับ": claim.source_sheet})
+    return pd.DataFrame(out)
+
 
 def summary(result: pd.DataFrame) -> dict:
     if result.empty:
         return {"คนไม่ซ้ำ": 0, "รายการบริการ": 0, "ผ่านเงื่อนไข": 0, "พบพึงรับ": 0, "ชดเชย50": 0,
-                "ไม่ชดเชย": 0, "เรียกเก็บ": 0.0, "ยอดชดเชย": 0.0, "ผลต่าง": 0.0}
+                "ไม่ชดเชย": 0, "เรียกเก็บ": 0.0, "ยอดชดเชย": 0.0, "ผลต่าง": 0.0, "HC": 0.0, "HC-DRUG": 0.0}
     paid = pd.to_numeric(result["ยอดชดเชย"], errors="coerce")
     charge = pd.to_numeric(result["เรียกเก็บ"], errors="coerce")
     found = result["สถานะพึงรับ"].ne("ไม่พบแถวพึงรับ")
@@ -309,17 +322,21 @@ def summary(result: pd.DataFrame) -> dict:
     zero = result["สถานะพึงรับ"].eq("ไม่ชดเชย (0 บาท)")
     charge_total = charge.sum(min_count=1)
     paid_total = paid.sum(min_count=1)
+    hc_total = pd.to_numeric(result.get("HC"), errors="coerce").sum(min_count=1) if "HC" in result else None
+    herb_total = pd.to_numeric(result.get("HC-DRUG"), errors="coerce").sum(min_count=1) if "HC-DRUG" in result else None
     return {"คนไม่ซ้ำ": result["เลขบัตรประชาชน"].nunique(), "รายการบริการ": len(result),
             "ผ่านเงื่อนไข": int(eligible.sum()), "พบพึงรับ": int(found.sum()),
             "ชดเชย50": int(compensated.sum()), "ไม่ชดเชย": int(zero.sum()),
             "เรียกเก็บ": 0.0 if pd.isna(charge_total) else float(charge_total),
             "ยอดชดเชย": 0.0 if pd.isna(paid_total) else float(paid_total),
-            "ผลต่าง": float((charge.fillna(0) - paid.fillna(0)).sum())}
+            "ผลต่าง": float((charge.fillna(0) - paid.fillna(0)).sum()),
+            "HC": 0.0 if pd.isna(hc_total) else float(hc_total),
+            "HC-DRUG": 0.0 if pd.isna(herb_total) else float(herb_total)}
 
 
 def date_summary(result: pd.DataFrame) -> pd.DataFrame:
     columns = ["วันที่รับบริการ", "รายการบริการ", "คนไม่ซ้ำ", "ผ่านเงื่อนไข", "พบพึงรับ",
-               "มี OP 50", "ไม่มี OP 50/ตกหล่น", "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย"]
+               "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย", "HC", "HC-DRUG"]
     if result.empty:
         return pd.DataFrame(columns=columns)
     frame = result.copy()
@@ -327,16 +344,16 @@ def date_summary(result: pd.DataFrame) -> pd.DataFrame:
     frame["_charge"] = pd.to_numeric(frame["เรียกเก็บ"], errors="coerce")
     frame["_eligible"] = frame["ผ่านเงื่อนไขเคลม"].eq("ผ่าน")
     frame["_found"] = frame["สถานะพึงรับ"].ne("ไม่พบแถวพึงรับ")
-    frame["_op50"] = frame["OP=50"].eq("ใช่")
-    frame["_no_op50"] = ~frame["_op50"]
     frame["_50"] = frame["สถานะพึงรับ"].eq("ชดเชย 50 บาท")
     frame["_zero"] = frame["สถานะพึงรับ"].eq("ไม่ชดเชย (0 บาท)")
+    for component in ("HC", "HC-DRUG"):
+        frame["_" + component] = pd.to_numeric(frame.get(component), errors="coerce")
     grouped = frame.groupby("วันที่รับบริการ", dropna=False).agg({
         "เลขบัตรประชาชน": ["size", "nunique"], "_eligible": "sum", "_found": "sum",
-        "_op50": "sum", "_no_op50": "sum", "_50": "sum", "_zero": "sum", "_charge": "sum", "_paid": "sum",
+        "_50": "sum", "_zero": "sum", "_charge": "sum", "_paid": "sum", "_HC": "sum", "_HC-DRUG": "sum",
     }).reset_index()
     grouped.columns = ["วันที่รับบริการ", "รายการบริการ", "คนไม่ซ้ำ", "ผ่านเงื่อนไข", "พบพึงรับ",
-                       "มี OP 50", "ไม่มี OP 50/ตกหล่น", "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย"]
+                       "ชดเชย 50 บาท", "ไม่ชดเชย", "ยอดเรียกเก็บ", "ยอดชดเชย", "HC", "HC-DRUG"]
     return grouped[columns].sort_values("วันที่รับบริการ")
 
 
