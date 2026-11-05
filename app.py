@@ -528,6 +528,8 @@ def local_clinical(scope):
         password = st.text_input("รหัสผ่านฐานข้อมูล JHCIS", type="password", key="local_db_password")
         transport = st.selectbox("ช่องทางเชื่อม", ["เครื่องนี้ / LAN ภายใน", "SSH tunnel ที่เปิดไว้ (localhost)", "Internet พร้อม TLS"], key="local_db_transport")
         dates = st.date_input("วันที่รับบริการจาก JHCIS", value=(pd.Timestamp.today().date().replace(day=1), pd.Timestamp.today().date()), key="local_db_dates")
+        pid_filter = st.text_input("ค้นหา PID/เลขบัตร (เว้นว่าง = ทุกคน)", value="", key="local_db_pid_filter", placeholder="เช่น 3471200...")
+        telemed_only = st.checkbox("กรองเฉพาะ Telemed: ICD10 Z71.9/Z719 + DrugCode TELMED", value=False, key="local_db_telemed_only")
         submitted = st.form_submit_button("เชื่อมและอ่าน JHCIS แบบ read-only", width="stretch")
     st.caption("ใช้ SELECT เท่านั้น ไม่มีการแก้ฐาน • ฐานบน Internet ที่ไม่เปิด TLS ให้ใช้ SSH tunnel/VPN ภายในก่อน • แนะนำบัญชีฐานที่มีสิทธิอ่าน")
     if submitted:
@@ -539,7 +541,7 @@ def local_clinical(scope):
                       "password": password, "transport": {"เครื่องนี้ / LAN ภายใน": "local", "SSH tunnel ที่เปิดไว้ (localhost)": "ssh", "Internet พร้อม TLS": "tls"}[transport]}
             try:
                 with st.spinner("ตรวจโครงสร้างและอ่าน JHCIS…"):
-                    records = lj.read_standard(config, scope, *dates)
+                    records = lj.read_standard(config, scope, *dates, pid_filter=pid_filter.strip(), telemed_only=telemed_only)
                 st.session_state.clinical_records = (scope, records, dates)
             except Exception as error:
                 # A running process can still have the previous module in sys.modules.
@@ -830,7 +832,7 @@ def telemed_tab(budget, scope, demo=False):
     """Interactive Telemedicine reconciliation from JHCIS or uploaded files."""
     st.subheader("Telemedicine ปีงบประมาณ 2569")
     st.caption("เลือกแหล่งข้อมูลได้ 2 แบบ • JHCIS แบบอ่านอย่างเดียว หรือไฟล์บริการ + ไฟล์อ้างอิง • จับคู่ชื่อ-สกุล เลขบัตร และวันรับบริการ")
-    st.info("ผ่านเงื่อนไข = วันที่เป้าหมาย + DrugCode TELEMED + สิทธิ UC + ICD-10 กลุ่มโรคเรื้อรัง (เช่น I10, E11.9) ครบทุกข้อ")
+    st.info("ตัวชี้ขาดการเคลม Telemed คือ OP = 50 บาทในไฟล์พึงรับ + วันที่บริการตรงกัน • ไฟล์รายชื่อไม่มี ICD10/PID ก็ได้ ระบบจับคู่ด้วยชื่อ-สกุล + วันที่ และแสดง ICD10/สิทธิเป็นข้อมูลประกอบ")
     if demo:
         st.warning("โหมดตัวอย่างไม่รับข้อมูลผู้รับบริการจริง กรุณาเข้าสู่ระบบหน่วยบริการเพื่ออัปโหลด")
         return
@@ -854,7 +856,7 @@ def telemed_tab(budget, scope, demo=False):
             st.markdown("**📎 2) ไฟล์อ้างอิงสำหรับเติมเลขบัตรที่หาย**")
             st.caption("เช่น รายงาน JHCIS ที่มีชื่อ-สกุล เลขบัตร และวันที่ • ระบบเติมเฉพาะกรณีชื่อ+วันที่ตรงคนเดียว")
             reference_uploads = st.file_uploader("ไฟล์อ้างอิงชื่อ-สกุล/เลขบัตร", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key="telemed_reference_uploads")
-            declare = st.checkbox(f"ไฟล์ไม่มีรหัสหน่วยบริการ แต่เป็นข้อมูลของหน่วย {scope}", key="telemed_declare_scope")
+            declare = st.checkbox(f"ไฟล์ไม่มีรหัสหน่วยบริการ ให้ถือเป็นข้อมูลของหน่วย {scope}", value=True, key="telemed_declare_scope", help="ไฟล์ที่ไม่มี HCODE/HSUB จะผูกกับหน่วยที่ล็อกอินอยู่เท่านั้น")
             if st.button("นำเข้าไฟล์และจับคู่ชื่อ-สกุล/เลขบัตร", type="primary", width="stretch", key="telemed_import"):
                 if not service_uploads:
                     st.warning("เลือกไฟล์ผู้รับบริการก่อน")
