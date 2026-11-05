@@ -17,6 +17,7 @@ from dashboard import jhcis as jc
 from dashboard import local_jhcis as lj
 from dashboard import clinical_input as ci
 from dashboard import telemed as tm
+from dashboard import ndp
 from dashboard import focus_ui as fu
 from dashboard import data as data_module
 # Streamlit may rerun app.py while imported modules from the prior release
@@ -538,7 +539,7 @@ def local_clinical(scope):
                       "password": password, "transport": {"เครื่องนี้ / LAN ภายใน": "local", "SSH tunnel ที่เปิดไว้ (localhost)": "ssh", "Internet พร้อม TLS": "tls"}[transport]}
             try:
                 with st.spinner("ตรวจโครงสร้างและอ่าน JHCIS…"):
-                    records = lj.read_standard(config, scope, *dates, pid_filter=pid_filter.strip(), telemed_only=telemed_only)
+                    records = lj.read_standard(config, scope, *dates)
                 st.session_state.clinical_records = (scope, records, dates)
             except Exception as error:
                 # A running process can still have the previous module in sys.modules.
@@ -561,8 +562,6 @@ def local_clinical(scope):
     loaded = st.session_state.get("clinical_records")
     if loaded and loaded[0] == scope:
         st.success(f"อ่าน {len(loaded[1]):,} visit • {loaded[2][0]} ถึง {loaded[2][1]}")
-        if st.session_state.get("local_db_pid_filter"):
-            st.info(f"ตัวกรอง PID: {st.session_state.local_db_pid_filter}")
         female_text = st.text_input("รหัสเพศหญิงในฐานนี้", value="2,F,FEMALE,หญิง", key="local_db_female")
         nation_codes = sorted({str(value) for value in loaded[1].nationality.dropna() if str(value).strip()})
         thai_codes = st.multiselect("เลือกรหัสที่หมายถึงสัญชาติไทยในฐานนี้", nation_codes,
@@ -828,44 +827,69 @@ def service_tab(datasets, rules, prefix, only_walkin=False, evidence=None):
 
 
 def telemed_tab(budget, scope, demo=False):
-    """Interactive, session-local Telemedicine claim reconciliation."""
+    """Interactive Telemedicine reconciliation from JHCIS or uploaded files."""
     st.subheader("Telemedicine ปีงบประมาณ 2569")
-    st.caption("จับคู่เลขบัตรประชาชน + วันที่รับบริการ + รหัสหน่วยบริการ • แสดงเลขบัตรเฉพาะเซสชันนี้และไฟล์ที่ผู้ใช้กดส่งออก")
-    st.info("ตัวชี้ขาดการเคลม Telemed คือ OP = 50 บาทในไฟล์พึงรับ + วันที่บริการตรงกัน • ไฟล์รายชื่อไม่มี ICD10/PID ก็ได้ ระบบจับคู่ด้วยชื่อ-สกุล + วันที่ และแสดง ICD10/สิทธิเป็นข้อมูลประกอบ")
+    st.caption("เลือกแหล่งข้อมูลได้ 2 แบบ • JHCIS แบบอ่านอย่างเดียว หรือไฟล์บริการ + ไฟล์อ้างอิง • จับคู่ชื่อ-สกุล เลขบัตร และวันรับบริการ")
+    st.info("ผ่านเงื่อนไข = วันที่เป้าหมาย + DrugCode TELEMED + สิทธิ UC + ICD-10 กลุ่มโรคเรื้อรัง (เช่น I10, E11.9) ครบทุกข้อ")
     if demo:
         st.warning("โหมดตัวอย่างไม่รับข้อมูลผู้รับบริการจริง กรุณาเข้าสู่ระบบหน่วยบริการเพื่ออัปโหลด")
         return
-    with st.container(border=True):
-        st.markdown("**📌 1) อัปโหลดไฟล์รายชื่อผู้รับบริการ Telemedicine**")
-        st.caption("มีวันที่รับบริการและเลขบัตร หรือชื่อ-สกุลก็ได้ • ICD10/DrugCode เป็นข้อมูลประกอบ • ถ้าไฟล์ไม่มี HCODE/HSUB ระบบจะผูกกับหน่วยที่ล็อกอินอยู่ • รองรับ CSV/XLS/XLSX")
-        service_uploads = st.file_uploader("ไฟล์ผู้รับบริการ Telemedicine", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key="telemed_service_uploads")
-        declare = st.checkbox(f"ไฟล์ไม่มีรหัสหน่วยบริการ ให้ถือเป็นข้อมูลของหน่วย {scope}", value=True, key="telemed_declare_scope", help="ไฟล์ยอดรวม Telemed บางชุดไม่มี HCODE/HSUB ระบบจะผูกกับหน่วยที่ล็อกอินอยู่เท่านั้น")
-        dates = st.multiselect("วันที่ Telemedicine ที่ต้องการตรวจ", tm.default_dates(), default=tm.default_dates(),
-                               format_func=lambda d: f"{d.day}/{d.month}/{str(d.year + 543)[-2:]} ({d.isoformat()})", key="telemed_dates")
-        if st.button("นำเข้าไฟล์บริการและตรวจจับคู่", type="primary", width="stretch", key="telemed_import"):
-            if not service_uploads:
-                st.warning("เลือกไฟล์ผู้รับบริการก่อน")
-            else:
-                combined = st.session_state.get("telemed_services", pd.DataFrame(columns=tm.TELEMED_COLUMNS))
-                imported, notice_count = 0, 0
-                for upload in service_uploads:
-                    try:
-                        for sheet, raw in tm.read_file(upload.name, upload.getvalue()):
-                            rows, notices = tm.normalize_service(raw, scope, upload.name, sheet, declare)
-                            combined = pd.concat([combined, rows], ignore_index=True)
-                            imported += len(rows)
-                            notice_count += len(notices)
-                            for notice in notices[:5]:
-                                st.warning(f"{upload.name} / {sheet}: {notice}")
-                    except Exception as error:
-                        st.error(f"{upload.name}: {error}")
-                if len(combined) > 100_000:
-                    st.error("ข้อมูลบริการเกิน 100,000 แถว กรุณาแบ่งอัปโหลดตามช่วงวันที่")
+    mode = st.radio("แหล่งข้อมูลผู้รับบริการ", ["อัปโหลดไฟล์จับคู่", "เชื่อม JHCIS แบบอ่านอย่างเดียว"],
+                    horizontal=True, key="telemed_source_mode")
+    dates = st.multiselect("วันที่ Telemedicine ที่ต้องการตรวจ", tm.default_dates(), default=tm.default_dates(),
+                           format_func=lambda d: f"{d.day}/{d.month}/{str(d.year + 543)[-2:]} ({d.isoformat()})", key="telemed_dates")
+    if mode == "เชื่อม JHCIS แบบอ่านอย่างเดียว":
+        if os.environ.get("KHAMTECH_LOCAL") != "1":
+            st.warning("การเชื่อม JHCIS เปิดเฉพาะโหมดรันในเครื่องหน่วยบริการ เพื่อไม่ส่งฐานผู้ป่วยขึ้นเว็บ ใช้โหมดอัปโหลดไฟล์ได้ทันทีบนเว็บนี้")
+        else:
+            evidence = local_clinical(scope)
+            if evidence is not None:
+                st.session_state.telemed_services = tm.from_jhcis(evidence[0], scope)
+                st.success(f"เตรียมข้อมูลจาก JHCIS แล้ว {len(st.session_state.telemed_services):,} visit • ตรวจ DrugCode/ICD10 ต่อในหน้านี้")
+    else:
+        with st.container(border=True):
+            st.markdown("**📌 1) ไฟล์ผู้รับบริการ Telemedicine**")
+            st.caption("มีเลขบัตรหรือชื่อ-สกุลก็ได้ • ต้องมีวันที่รับบริการ • รองรับ CSV/XLS/XLSX และหัวตารางที่มีบรรทัดนำหน้า")
+            service_uploads = st.file_uploader("ไฟล์ผู้รับบริการ Telemedicine", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key="telemed_service_uploads")
+            st.markdown("**📎 2) ไฟล์อ้างอิงสำหรับเติมเลขบัตรที่หาย**")
+            st.caption("เช่น รายงาน JHCIS ที่มีชื่อ-สกุล เลขบัตร และวันที่ • ระบบเติมเฉพาะกรณีชื่อ+วันที่ตรงคนเดียว")
+            reference_uploads = st.file_uploader("ไฟล์อ้างอิงชื่อ-สกุล/เลขบัตร", type=["csv", "xls", "xlsx"], accept_multiple_files=True, key="telemed_reference_uploads")
+            declare = st.checkbox(f"ไฟล์ไม่มีรหัสหน่วยบริการ แต่เป็นข้อมูลของหน่วย {scope}", key="telemed_declare_scope")
+            if st.button("นำเข้าไฟล์และจับคู่ชื่อ-สกุล/เลขบัตร", type="primary", width="stretch", key="telemed_import"):
+                if not service_uploads:
+                    st.warning("เลือกไฟล์ผู้รับบริการก่อน")
                 else:
-                    # Keep every source row.  Repeated rows are shown as repeated
-                    # evidence so a reviewer can trace the source file/row.
-                    st.session_state.telemed_services = combined.reset_index(drop=True)
-                    st.success(f"นำเข้าแล้ว {imported:,} แถว • เก็บในเซสชันนี้ {len(st.session_state.telemed_services):,} แถว • ข้อสังเกต {notice_count:,}")
+                    combined = st.session_state.get("telemed_services", pd.DataFrame(columns=tm.TELEMED_COLUMNS))
+                    imported, notice_count = 0, 0
+                    for upload in service_uploads:
+                        try:
+                            for sheet, raw in tm.read_file(upload.name, upload.getvalue()):
+                                rows, notices = tm.normalize_service(raw, scope, upload.name, sheet, declare)
+                                combined = pd.concat([combined, rows], ignore_index=True)
+                                imported += len(rows)
+                                notice_count += len(notices)
+                                for notice in notices[:5]:
+                                    st.warning(f"{upload.name} / {sheet}: {notice}")
+                        except Exception as error:
+                            st.error(f"{upload.name}: {error}")
+                    references = st.session_state.get("telemed_reference", pd.DataFrame(columns=tm.TELEMED_COLUMNS))
+                    for upload in reference_uploads or []:
+                        try:
+                            for sheet, raw in tm.read_file(upload.name, upload.getvalue()):
+                                rows, notices = tm.normalize_service(raw, scope, upload.name, sheet, declare)
+                                references = pd.concat([references, rows], ignore_index=True)
+                                for notice in notices[:5]:
+                                    st.warning(f"อ้างอิง {upload.name} / {sheet}: {notice}")
+                        except Exception as error:
+                            st.error(f"อ้างอิง {upload.name}: {error}")
+                    if len(combined) > 100_000 or len(references) > 100_000:
+                        st.error("ข้อมูลเกิน 100,000 แถว กรุณาแบ่งอัปโหลดตามช่วงวันที่")
+                    else:
+                        # Keep every source row for audit; duplicate rows are not silently removed here.
+                        st.session_state.telemed_reference = references.reset_index(drop=True)
+                        st.session_state.telemed_services = tm.fill_missing_pids(combined.reset_index(drop=True), references)
+                        filled = int(st.session_state.telemed_services["pid_source"].eq("เติมจากไฟล์อ้างอิง").sum())
+                        st.success(f"นำเข้าไฟล์บริการ {imported:,} แถว • เติมเลขบัตรจากอ้างอิง {filled:,} แถว • ข้อสังเกต {notice_count:,}")
     services = st.session_state.get("telemed_services", pd.DataFrame(columns=tm.TELEMED_COLUMNS))
     if services.empty:
         st.info("ยังไม่มีข้อมูลผู้รับบริการ Telemedicine ในเซสชันนี้")
@@ -874,7 +898,7 @@ def telemed_tab(budget, scope, demo=False):
         st.warning("ยังไม่มีไฟล์พึงรับ รพร. ที่ตรงกับตัวกรอง กรุณาอัปโหลด/เลือกชุดข้อมูลพึงรับด้านซ้าย")
     result = tm.reconcile(budget, services, dates)
     totals = tm.summary(result)
-    cards = st.columns(7)
+    cards = st.columns(9)
     cards[0].metric("คนไม่ซ้ำ", f"{totals['คนไม่ซ้ำ']:,}")
     cards[1].metric("รายการบริการ", f"{totals['รายการบริการ']:,}")
     cards[2].metric("ผ่านเงื่อนไข", f"{totals['ผ่านเงื่อนไข']:,}")
@@ -882,7 +906,9 @@ def telemed_tab(budget, scope, demo=False):
     cards[4].metric("ไม่ชดเชย", f"{totals['ไม่ชดเชย']:,}")
     cards[5].metric("ยอดเรียกเก็บ", f"{totals['เรียกเก็บ']:,.2f}", "บาท")
     cards[6].metric("ผลต่างตรวจสอบ", f"{totals['ผลต่าง']:,.2f}", "เรียกเก็บ − ชดเชย")
-    st.caption("ยอดชดเชยรวมใช้ตัวเลขจากคอลัมน์ยอดชดเชยของไฟล์พึงรับ ไม่คูณจำนวนเคสซ้ำ และรายการที่จับคู่ไม่ได้ยังคงแสดงเพื่อไม่ให้ข้อมูลตกหล่น")
+    cards[7].metric("HC", f"{totals['HC']:,.2f}", "ยอดจากแถวเดียวกัน")
+    cards[8].metric("HC-DRUG", f"{totals['HC-DRUG']:,.2f}", "สมุนไพร")
+    st.caption("จับคู่ด้วยเลขบัตรก่อน หากเลขบัตรหายจะใช้ชื่อ-สกุล + วันที่เฉพาะกรณีที่ตรงคนเดียว • ยอด HC/HC-Drug/PP/FS แสดงจากแถวพึงรับเดียวกัน")
     st.markdown("**สรุปแยกตามวันที่รับบริการ**")
     st.dataframe(tm.date_summary(result), hide_index=True, width="stretch")
     if result.empty:
@@ -895,7 +921,50 @@ def telemed_tab(budget, scope, demo=False):
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="telemed_export", width="stretch")
     if st.button("ล้างข้อมูล Telemedicine ในเซสชัน", key="telemed_clear"):
         st.session_state.pop("telemed_services", None)
+        st.session_state.pop("telemed_reference", None)
         st.rerun()
+
+
+def ndp_tab(scope, demo=False):
+    """Track NDP/STM payments by sheet, fund, right and patient."""
+    st.subheader("ติดตามยอดค้างจ่ายจาก STM / NDP")
+    st.caption("อัปโหลด Statement ที่ สปสช. โอนชดเชยแล้ว ระบบรวมทุกชีตและแยกสิทธิ์/กองทุนให้ตรวจสอบเป็นรายเคส")
+    if demo:
+        st.info("โหมดตัวอย่างไม่รับไฟล์ผู้ป่วยจริง")
+        return
+    uploads = st.file_uploader("ไฟล์ Statement/NDP ที่โอนชดเชยแล้ว", type=["xls", "xlsx", "csv"], accept_multiple_files=True, key="ndp_uploads")
+    if st.button("นำเข้า Statement และสรุปยอด", type="primary", key="ndp_import"):
+        combined = st.session_state.get("ndp_payments", pd.DataFrame())
+        imported = 0
+        for upload in uploads or []:
+            try:
+                for sheet, raw in ndp.read_file(upload.name, upload.getvalue()):
+                    rows = ndp.normalize(raw, scope or "", upload.name, sheet)
+                    combined = pd.concat([combined, rows], ignore_index=True)
+                    imported += len(rows)
+            except Exception as error:
+                st.error(f"{upload.name}: {error}")
+        st.session_state.ndp_payments = combined.drop_duplicates(subset=["PID", "วันที่รับบริการ", "ยอดชดเชย", "REP_NO", "ชีต", "แถวต้นทาง"], keep="first").reset_index(drop=True)
+        st.success(f"นำเข้าแล้ว {imported:,} รายการ • รวมในเซสชัน {len(st.session_state.ndp_payments):,} รายการ")
+    frame = st.session_state.get("ndp_payments", pd.DataFrame())
+    if frame.empty:
+        st.info("ยังไม่มีข้อมูล Statement ในเซสชันนี้")
+        return
+    total = float(pd.to_numeric(frame["ยอดชดเชย"], errors="coerce").fillna(0).sum())
+    people = frame["PID"].replace("", pd.NA).nunique(dropna=True)
+    cols = st.columns(4)
+    cols[0].metric("เคสที่ชดเชยแล้ว", f"{len(frame):,}")
+    cols[1].metric("ผู้รับบริการไม่ซ้ำ", f"{people:,}")
+    cols[2].metric("ยอดชดเชยรวม", f"{total:,.2f}", "บาท")
+    cols[3].metric("งวด/REP", f"{frame['REP_NO'].replace('', pd.NA).nunique(dropna=True):,}")
+    st.markdown("**สรุปตามสิทธิ์และกองทุน**")
+    st.dataframe(ndp.summary(frame), hide_index=True, width="stretch")
+    st.markdown("**สรุปตามชีต Statement**")
+    st.dataframe(ndp.sheet_summary(frame), hide_index=True, width="stretch")
+    rights = st.multiselect("กรองสิทธิ์/กองทุน", sorted(set(frame["สิทธิ"].dropna()) | set(frame["กองทุน"].dropna())), key="ndp_right_filter")
+    shown = frame if not rights else frame.loc[frame["สิทธิ"].isin(rights) | frame["กองทุน"].isin(rights)]
+    st.dataframe(shown, hide_index=True, width="stretch")
+    st.download_button("ดาวน์โหลดรายงานติดตามยอดค้างจ่าย", ndp.export(shown), "KhamTechReCheck_NDP_followup.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="ndp_export")
 
 
 def main():
@@ -1017,7 +1086,7 @@ def main():
             ["01 / นำเข้า Excel", "02 / ตรวจรหัสและงวด", "03 / สรุปและส่งออก"],
             ["เลือกงบพึงรับและ STM หลายไฟล์พร้อมกัน ระบบตรวจหัวตารางให้", "ใช้ HSUB ของ รพ.สต. และตั้งงวดตรงกันทั้งสองชุด", "ดูยอดรายหน่วยบริการ ผลต่างรอตรวจสอบ และดาวน์โหลด Excel"]):
             col.markdown(f'<div class="step"><strong>{title}</strong><p>{description}</p></div>', unsafe_allow_html=True)
-    tabs = st.tabs(["📊 01 พึงรับ รพ.สต.", "🧾 02 STM", "⚖️ 03 เปรียบเทียบ", "🔎 04 รายละเอียดบริการ", "🚶 05 Walk-in", "🩺 06 Telemedicine"])
+    tabs = st.tabs(["📊 01 พึงรับ รพ.สต.", "🧾 02 STM", "⚖️ 03 เปรียบเทียบ", "🔎 04 รายละเอียดบริการ", "🚶 05 Walk-in", "🩺 06 Telemedicine", "💸 07 ติดตาม NDP"])
     with tabs[0]:
         dataset_tab(datasets["budget"], "budget", [a for a in audits if a["ประเภท"] == "งบพึงรับ"], len(budget_files))
     with tabs[1]:
@@ -1031,6 +1100,8 @@ def main():
         service_tab(datasets, rules, "walkin", only_walkin=True, evidence=evidence)
     with tabs[5]:
         telemed_tab(datasets["budget"], scope or "", demo)
+    with tabs[6]:
+        ndp_tab(scope or "", demo)
     st.caption("KhamTechReCheck · สรุปจากไฟล์ที่อัปโหลดและตัวกรองปัจจุบัน · ยอดเงินหน่วยบาท · ใช้เพื่อประกอบการตรวจสอบ")
     st.caption(DEVELOPER_CREDIT)
 
